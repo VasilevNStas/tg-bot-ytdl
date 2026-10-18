@@ -8,6 +8,7 @@ import logging
 from aiogram import Bot, Dispatcher
 
 from tg_bot_ytdl.config import get_settings
+from tg_bot_ytdl.handlers import router
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ async def main() -> None:
     settings = get_settings()
     bot = Bot(token=settings.require_bot_token())
     dp = Dispatcher()
+    dp.include_router(router)
 
     logger.info("Starting polling...")
     try:
