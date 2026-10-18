@@ -71,6 +71,29 @@ def test_download_format_wraps_download_error(
         download_format("https://youtu.be/x", "137", tmp_path)
 
 
+class _EmptyYDL:
+    def __init__(self, params: dict[str, Any]) -> None:
+        self.params = params
+
+    def __enter__(self) -> "_EmptyYDL":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def extract_info(self, url: str, download: bool = False) -> None:
+        return None
+
+
+def test_download_format_raises_when_no_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _EmptyYDL)
+
+    with pytest.raises(DownloadError):
+        download_format("https://youtu.be/x", "137", tmp_path)
+
+
 async def test_fetch_format_times_out(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
