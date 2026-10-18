@@ -139,3 +139,55 @@ def test_download_format_prefers_requested_download_path(
     monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _MergedYDL)
 
     assert download_format("https://youtu.be/x", "137", tmp_path) == merged
+
+
+def test_download_format_merges_into_mp4(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _CapturingYDL(_FakeYDL):
+        def __init__(self, params: dict[str, Any]) -> None:
+            super().__init__(params)
+            captured.update(params)
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _CapturingYDL)
+
+    download_format("https://youtu.be/x", "137", tmp_path, merge_audio=True)
+
+    assert captured["merge_output_format"] == "mp4"
+
+
+def test_download_format_audio_only_uses_mp3_postprocessor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _CapturingYDL(_FakeYDL):
+        def __init__(self, params: dict[str, Any]) -> None:
+            super().__init__(params)
+            captured.update(params)
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _CapturingYDL)
+
+    download_format("https://youtu.be/x", "mp3", tmp_path, audio_only=True)
+
+    assert captured["format"] == "bestaudio/best"
+    assert captured["postprocessors"][0]["preferredcodec"] == "mp3"
+
+
+def test_download_format_audio_only_prefers_mp3_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mp3 = tmp_path / "abc.mp3"
+    mp3.write_bytes(b"data")
+
+    class _AudioYDL(_FakeYDL):
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            return {"id": "abc", "ext": "webm"}
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _AudioYDL)
+
+    assert (
+        download_format("https://youtu.be/x", "mp3", tmp_path, audio_only=True) == mp3
+    )

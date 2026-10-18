@@ -83,15 +83,15 @@ def test_format_filesize(size: int | None, expected: str) -> None:
 
 def test_select_formats_drops_storyboards() -> None:
     storyboard = _fmt("sb0", ext="mhtml", has_video=False, has_audio=False)
-    assert select_formats([storyboard, _fmt()]) == [_fmt()]
+    selected = select_formats([storyboard, _fmt()])
+    assert [fmt.format_id for fmt in selected] == ["137", "mp3"]
 
 
 def test_select_formats_deduplicates_same_quality() -> None:
     small = _fmt("137", filesize=1000)
     large = _fmt("399", filesize=2000)
     selected = select_formats([small, large])
-    assert len(selected) == 1
-    assert selected[0].format_id == "399"
+    assert [fmt.format_id for fmt in selected] == ["399", "mp3"]
 
 
 def test_select_formats_orders_video_before_audio() -> None:
@@ -100,7 +100,22 @@ def test_select_formats_orders_video_before_audio() -> None:
     )
     video = _fmt("137", height=1080, resolution="1920x1080")
     selected = select_formats([audio, video])
-    assert [fmt.format_id for fmt in selected] == ["137", "140"]
+    assert [fmt.format_id for fmt in selected] == ["137", "mp3"]
+    assert selected[-1].ext == "mp3"
+
+
+def test_select_formats_offers_only_mp4_video_and_mp3_audio() -> None:
+    webm = _fmt("248", ext="webm", height=1080, resolution="1920x1080")
+    m4a = _fmt("140", ext="m4a", resolution="audio only", height=None, has_video=False)
+    mp4 = _fmt("137", height=1080, resolution="1920x1080")
+    selected = select_formats([webm, m4a, mp4])
+    assert [fmt.format_id for fmt in selected] == ["137", "mp3"]
+
+
+def test_select_formats_adds_audio_option_without_video() -> None:
+    m4a = _fmt("140", ext="m4a", resolution="audio only", height=None, has_video=False)
+    selected = select_formats([m4a])
+    assert [fmt.format_id for fmt in selected] == ["mp3"]
 
 
 def test_select_formats_limits_to_max() -> None:

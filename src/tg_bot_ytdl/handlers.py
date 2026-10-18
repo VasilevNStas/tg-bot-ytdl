@@ -3,6 +3,7 @@
 """Command handlers for the bot."""
 
 import logging
+import re
 import tempfile
 from dataclasses import replace
 
@@ -103,6 +104,17 @@ SELECTION_EXPIRED_TEXT = "Не удалось найти выбранный фо
 RATE_LIMITED_TEXT = "Слишком часто. Подожди пару секунд и попробуй снова."
 
 UNEXPECTED_ERROR_TEXT = "Что-то пошло не так. Попробуй ещё раз позже."
+
+_UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+_MAX_FILENAME_LENGTH = 64
+
+
+def document_filename(title: str, suffix: str) -> str:
+    """Build a safe Telegram document name from the video title."""
+    name = _UNSAFE_FILENAME.sub(" ", title)
+    name = " ".join(name.split()).strip(" .")
+    name = name[:_MAX_FILENAME_LENGTH].rstrip(" .") or "video"
+    return f"{name}{suffix}"
 
 
 def format_duration(seconds: int | None) -> str:
@@ -228,12 +240,18 @@ async def handle_format_selected(callback: CallbackQuery) -> None:
                 format_id,
                 tmp,
                 merge_audio=fmt.has_video and not fmt.has_audio,
+                audio_only=fmt.ext == "mp3",
             )
             if path.stat().st_size > MAX_FILE_SIZE:
                 _record_download(user, info, fmt, STATUS_TOO_LARGE)
                 await message.answer(TOO_LARGE_TEXT)
                 return
-            await message.answer_document(FSInputFile(path))
+            await message.answer_document(
+                FSInputFile(
+                    path,
+                    filename=document_filename(info.title, path.suffix),
+                )
+            )
     except DownloadError:
         _record_download(user, info, fmt, STATUS_FAILED)
         await message.answer(DOWNLOAD_FAILED_TEXT)

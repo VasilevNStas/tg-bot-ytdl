@@ -10,6 +10,7 @@ import yt_dlp
 
 MAX_FILE_SIZE = 50 * 1024 * 1024
 DOWNLOAD_TIMEOUT = 120.0
+MP3_QUALITY = "192"
 
 
 class DownloadError(Exception):
@@ -22,24 +23,42 @@ def download_format(
     dest_dir: str | Path,
     *,
     merge_audio: bool = False,
+    audio_only: bool = False,
 ) -> Path:
     """Download a single ``format_id`` of ``url`` into ``dest_dir``."""
-    selector = f"{format_id}+bestaudio/{format_id}" if merge_audio else format_id
     options: dict[str, Any] = {
         "quiet": True,
-        "format": selector,
         "outtmpl": str(Path(dest_dir) / "%(id)s.%(ext)s"),
         "noplaylist": True,
     }
+    if audio_only:
+        options["format"] = "bestaudio/best"
+        options["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": MP3_QUALITY,
+            }
+        ]
+    else:
+        options["format"] = (
+            f"{format_id}+bestaudio/{format_id}" if merge_audio else format_id
+        )
+        if merge_audio:
+            options["merge_output_format"] = "mp4"
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
             if info is None:
                 raise DownloadError(f"yt-dlp returned no data for {url}")
-            path = _downloaded_path(ydl, info)
+            path = Path(_downloaded_path(ydl, info))
     except yt_dlp.utils.DownloadError as exc:
         raise DownloadError(str(exc)) from exc
-    return Path(path)
+    if audio_only:
+        mp3_path = path.with_suffix(".mp3")
+        if mp3_path.exists():
+            path = mp3_path
+    return path
 
 
 def _downloaded_path(ydl: Any, info: dict[str, Any]) -> str:
@@ -55,6 +74,7 @@ async def fetch_format(
     dest_dir: str | Path,
     *,
     merge_audio: bool = False,
+    audio_only: bool = False,
 ) -> Path:
     """Async wrapper around :func:`download_format` (runs in a worker thread)."""
     try:
@@ -65,6 +85,7 @@ async def fetch_format(
                 format_id,
                 dest_dir,
                 merge_audio=merge_audio,
+                audio_only=audio_only,
             ),
             timeout=DOWNLOAD_TIMEOUT,
         )
