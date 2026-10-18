@@ -7,14 +7,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tg_bot_ytdl import handlers
-from tg_bot_ytdl.extractor import ExtractionError, VideoInfo
+from tg_bot_ytdl.extractor import ExtractionError, VideoFormat, VideoInfo
 from tg_bot_ytdl.handlers import (
     EXTRACTION_FAILED_TEXT,
+    FORMAT_SELECTED_TEXT,
     HELP_TEXT,
     NOT_A_LINK_TEXT,
     PROCESSING_TEXT,
     START_TEXT,
     format_duration,
+    handle_format_selected,
     handle_help,
     handle_link,
     handle_start,
@@ -68,7 +70,42 @@ async def test_handle_link_reports_metadata(
 
     assert message.answer.await_count == 2
     message.answer.assert_any_await(PROCESSING_TEXT)
-    message.answer.assert_any_await(handlers.format_info_message(info))
+    message.answer.assert_any_await(
+        handlers.format_info_message(info), reply_markup=None
+    )
+
+
+async def test_handle_link_attaches_formats_keyboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fmt = VideoFormat(
+        format_id="137",
+        ext="mp4",
+        resolution="1280x720",
+        filesize=None,
+        note=None,
+    )
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[fmt],
+    )
+    monkeypatch.setattr(handlers, "fetch_video_info", AsyncMock(return_value=info))
+    message = _message("https://youtu.be/x")
+
+    await handle_link(message)
+
+    markup = message.answer.await_args.kwargs["reply_markup"]
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == "fmt:137"
+
+
+async def test_handle_format_selected_answers() -> None:
+    callback = AsyncMock()
+    await handle_format_selected(callback)
+    callback.answer.assert_awaited_once_with(FORMAT_SELECTED_TEXT)
 
 
 async def test_handle_link_handles_extraction_error(

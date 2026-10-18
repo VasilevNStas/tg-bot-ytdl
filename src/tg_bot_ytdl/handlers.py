@@ -4,7 +4,7 @@
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from tg_bot_ytdl.extractor import (
     ExtractionError,
@@ -12,6 +12,7 @@ from tg_bot_ytdl.extractor import (
     fetch_video_info,
     is_supported_url,
 )
+from tg_bot_ytdl.keyboards import CALLBACK_PREFIX, build_formats_keyboard
 
 router = Router(name="common")
 
@@ -54,6 +55,8 @@ EXTRACTION_FAILED_TEXT = (
     "Не удалось получить информацию по ссылке. Проверь ссылку и попробуй снова."
 )
 
+FORMAT_SELECTED_TEXT = "Формат выбран."
+
 
 def format_duration(seconds: int | None) -> str:
     """Format a duration in seconds as ``mm:ss`` / ``h:mm:ss``."""
@@ -92,4 +95,13 @@ async def handle_link(message: Message) -> None:
     except ExtractionError:
         await message.answer(EXTRACTION_FAILED_TEXT)
         return
-    await message.answer(format_info_message(info))
+    await message.answer(
+        format_info_message(info),
+        reply_markup=build_formats_keyboard(info.formats),
+    )
+
+
+@router.callback_query(F.data.startswith(CALLBACK_PREFIX))
+async def handle_format_selected(callback: CallbackQuery) -> None:
+    """Acknowledge a format selection from the inline keyboard."""
+    await callback.answer(FORMAT_SELECTED_TEXT)
