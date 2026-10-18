@@ -15,6 +15,7 @@ from aiogram.types import User as TelegramUser
 
 from tg_bot_ytdl.channels import (
     SECTIONS,
+    VIDEO_LIST_LIMIT,
     ChannelInfo,
     ChannelVideo,
     fetch_channel_info,
@@ -40,6 +41,7 @@ from tg_bot_ytdl.keyboards import (
     MENU_DOWNLOAD,
     MENU_HELP,
     MENU_SUBSCRIPTIONS,
+    MORE_CALLBACK_PREFIX,
     SECTION_CALLBACK_PREFIX,
     SUBSCRIPTION_CALLBACK_PREFIX,
     SUBSCRIPTION_DELETE_PREFIX,
@@ -47,6 +49,7 @@ from tg_bot_ytdl.keyboards import (
     build_channel_sections_keyboard,
     build_formats_keyboard,
     build_main_menu_keyboard,
+    build_more_keyboard,
     build_subscription_actions_keyboard,
     build_subscriptions_keyboard,
     build_video_keyboard,
@@ -177,6 +180,10 @@ SECTION_EMPTY_TEXT = "В этом разделе пока нет видео."
 SECTION_FAILED_TEXT = "Не удалось получить список видео. Попробуй позже."
 
 SECTION_EXPIRED_TEXT = "Выбор устарел. Открой «📺 Мои подписки» заново."
+
+MORE_PROMPT_TEXT = "Показать ещё видео:"
+
+MORE_END_TEXT = "Больше видео в этом разделе нет."
 
 FORMATS_PREPARING_TEXT = "Готовлю форматы..."
 
@@ -392,6 +399,56 @@ async def handle_subscription_open(callback: CallbackQuery) -> None:
     )
 
 
+def _parse_more(data: str | None) -> tuple[int, str, int] | None:
+    """Parse ``<subscription_id>:<section>:<offset>`` callback data."""
+    raw = (data or "")[len(MORE_CALLBACK_PREFIX) :]
+    id_part, _, rest = raw.partition(":")
+    section, _, offset_part = rest.partition(":")
+    if section not in SECTIONS:
+        return None
+    try:
+        return int(id_part), section, int(offset_part)
+    except ValueError:
+        return None
+
+
+async def _send_video_page(
+    message: Message,
+    subscription_id: int,
+    title: str,
+    url: str,
+    section: str,
+    offset: int,
+) -> None:
+    """Send a page of channel videos and a "more" button when available."""
+    await message.answer(SECTION_LOADING_TEXT)
+    try:
+        videos = await fetch_channel_videos(
+            section_url(url, section),
+            limit=offset + VIDEO_LIST_LIMIT,
+        )
+    except ExtractionError:
+        await message.answer(SECTION_FAILED_TEXT)
+        return
+    page = videos[offset : offset + VIDEO_LIST_LIMIT]
+    if not page:
+        await message.answer(SECTION_EMPTY_TEXT if offset == 0 else MORE_END_TEXT)
+        return
+    if offset == 0:
+        await message.answer(SECTION_LIST_TITLE_TEXT.format(title=title))
+    for video in page:
+        await _send_video_card(message, video)
+    if len(page) == VIDEO_LIST_LIMIT:
+        await message.answer(
+            MORE_PROMPT_TEXT,
+            reply_markup=build_more_keyboard(
+                subscription_id,
+                section,
+                offset + VIDEO_LIST_LIMIT,
+            ),
+        )
+
+
 @router.callback_query(F.data.startswith(SECTION_CALLBACK_PREFIX))
 async def handle_section_selected(callback: CallbackQuery) -> None:
     """List recent videos of the chosen channel section."""
@@ -404,19 +461,26 @@ async def handle_section_selected(callback: CallbackQuery) -> None:
     if parsed is None or channel is None:
         await message.answer(SECTION_EXPIRED_TEXT)
         return
+    subscription_id, section = parsed
     title, url = channel
-    await message.answer(SECTION_LOADING_TEXT)
-    try:
-        videos = await fetch_channel_videos(section_url(url, parsed[1]))
-    except ExtractionError:
-        await message.answer(SECTION_FAILED_TEXT)
+    await _send_video_page(message, subscription_id, title, url, section, 0)
+
+
+@router.callback_query(F.data.startswith(MORE_CALLBACK_PREFIX))
+async def handle_more_selected(callback: CallbackQuery) -> None:
+    """Load the next page of a channel video list."""
+    await callback.answer()
+    message = callback.message
+    if message is None:
         return
-    if not videos:
-        await message.answer(SECTION_EMPTY_TEXT)
+    parsed = _parse_more(callback.data)
+    channel = None if parsed is None else _get_channel(callback.from_user, parsed[0])
+    if parsed is None or channel is None:
+        await message.answer(SECTION_EXPIRED_TEXT)
         return
-    await message.answer(SECTION_LIST_TITLE_TEXT.format(title=title))
-    for video in videos:
-        await _send_video_card(message, video)
+    subscription_id, section, offset = parsed
+    title, url = channel
+    await _send_video_page(message, subscription_id, title, url, section, offset)
 
 
 @router.callback_query(F.data.startswith(VIDEO_CALLBACK_PREFIX))

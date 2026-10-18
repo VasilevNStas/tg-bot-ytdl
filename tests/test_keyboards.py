@@ -11,6 +11,8 @@ from tg_bot_ytdl.keyboards import (
     MENU_DOWNLOAD,
     MENU_HELP,
     MENU_SUBSCRIPTIONS,
+    MORE_BUTTON_TEXT,
+    MORE_CALLBACK_PREFIX,
     SECTION_CALLBACK_PREFIX,
     SUBSCRIPTION_CALLBACK_PREFIX,
     SUBSCRIPTION_DELETE_PREFIX,
@@ -18,6 +20,7 @@ from tg_bot_ytdl.keyboards import (
     build_channel_sections_keyboard,
     build_formats_keyboard,
     build_main_menu_keyboard,
+    build_more_keyboard,
     build_subscription_actions_keyboard,
     build_subscriptions_keyboard,
     build_video_keyboard,
@@ -203,3 +206,11 @@ def test_video_keyboard_has_download_button() -> None:
         markup.inline_keyboard[0][0].callback_data
         == f"{VIDEO_CALLBACK_PREFIX}dQw4w9WgXcQ"
     )
+
+
+def test_more_keyboard_has_more_button() -> None:
+    markup = build_more_keyboard(4, "videos", 5)
+    button = markup.inline_keyboard[0][0]
+
+    assert button.text == MORE_BUTTON_TEXT
+    assert button.callback_data == f"{MORE_CALLBACK_PREFIX}4:videos:5"
