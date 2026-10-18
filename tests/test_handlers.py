@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 
-from tg_bot_ytdl import handlers
+from tg_bot_ytdl import db, handlers
 from tg_bot_ytdl.downloader import DownloadError
 from tg_bot_ytdl.extractor import ExtractionError, VideoFormat, VideoInfo
 from tg_bot_ytdl.handlers import (
@@ -26,6 +27,7 @@ from tg_bot_ytdl.handlers import (
     handle_link,
     handle_start,
 )
+from tg_bot_ytdl.models import DownloadRequest, User
 
 
 @pytest.fixture(autouse=True)
@@ -33,15 +35,20 @@ def _clear_last_video() -> None:
     handlers._last_video.clear()
 
 
-def _message(text: str) -> AsyncMock:
+def _message(text: str, user_id: int = 1) -> AsyncMock:
     message = AsyncMock()
     message.text = text
+    message.from_user.id = user_id
+    message.from_user.username = None
+    message.chat.id = user_id
     return message
 
 
 def _callback(chat_id: int, data: str) -> AsyncMock:
     callback = AsyncMock()
     callback.data = data
+    callback.from_user.id = chat_id
+    callback.from_user.username = None
     callback.message.chat.id = chat_id
     return callback
 
@@ -60,6 +67,14 @@ async def test_handle_start_replies() -> None:
     message = _message("/start")
     await handle_start(message)
     message.answer.assert_awaited_once_with(START_TEXT)
+
+
+async def test_handle_start_registers_user() -> None:
+    message = _message("/start", user_id=55)
+    await handle_start(message)
+    with db.session_scope() as session:
+        user = session.scalar(select(User).where(User.telegram_id == 55))
+        assert user is not None
 
 
 async def test_handle_help_replies() -> None:
@@ -160,6 +175,35 @@ async def test_handle_format_selected_downloads(
 
     callback.message.answer.assert_any_await(handlers.DOWNLOADING_TEXT)
     callback.message.answer_document.assert_awaited_once()
+
+
+async def test_handle_format_selected_records_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+
+    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+        path = Path(str(dest_dir)) / f"{format_id}.mp4"
+        path.write_bytes(b"data")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    with db.session_scope() as session:
+        request = session.scalar(select(DownloadRequest))
+        assert request is not None
+        assert request.status == "sent"
+        assert request.format_id == "137"
 
 
 async def test_handle_format_selected_rejects_large_known_size(
