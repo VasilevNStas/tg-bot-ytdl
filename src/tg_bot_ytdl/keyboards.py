@@ -2,14 +2,74 @@
 # SPDX-License-Identifier: MIT
 """Inline keyboards for format selection."""
 
-from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from tg_bot_ytdl.extractor import VideoFormat
 
 CALLBACK_PREFIX = "fmt:"
 MAX_FORMAT_BUTTONS = 20
 MP3_FORMAT_ID = "mp3"
+
+MENU_DOWNLOAD = "🔗 Скачать по ссылке"
+MENU_SUBSCRIPTIONS = "📺 Мои подписки"
+MENU_HELP = "ℹ️ Помощь"
+
+SUBSCRIPTION_CALLBACK_PREFIX = "sub:"
+SUBSCRIPTION_DELETE_PREFIX = "subdel:"
+
+_MAX_BUTTON_TITLE = 40
+
+
+def build_main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Build the persistent main menu reply keyboard."""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text=MENU_DOWNLOAD)
+    builder.button(text=MENU_SUBSCRIPTIONS)
+    builder.button(text=MENU_HELP)
+    builder.adjust(2, 1)
+    return builder.as_markup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Ссылка на видео или канал",
+    )
+
+
+def channel_button_label(title: str) -> str:
+    """Build a compact label for a saved channel button."""
+    clean = " ".join(title.split())
+    if len(clean) > _MAX_BUTTON_TITLE:
+        clean = clean[: _MAX_BUTTON_TITLE - 1].rstrip() + "…"
+    return clean or "Канал"
+
+
+def build_subscriptions_keyboard(
+    subscriptions: list[tuple[int, str]],
+) -> InlineKeyboardMarkup | None:
+    """Build a keyboard with one button per saved channel."""
+    if not subscriptions:
+        return None
+    builder = InlineKeyboardBuilder()
+    for subscription_id, title in subscriptions:
+        builder.button(
+            text=channel_button_label(title),
+            callback_data=f"{SUBSCRIPTION_CALLBACK_PREFIX}{subscription_id}",
+        )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_subscription_actions_keyboard(
+    subscription_id: int,
+) -> InlineKeyboardMarkup:
+    """Build the actions keyboard for a single saved channel."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="❌ Удалить",
+        callback_data=f"{SUBSCRIPTION_DELETE_PREFIX}{subscription_id}",
+    )
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def format_filesize(size: int | None) -> str:

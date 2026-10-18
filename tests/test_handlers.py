@@ -11,10 +11,15 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
 
 from tg_bot_ytdl import db, handlers
+from tg_bot_ytdl.channels import ChannelInfo
 from tg_bot_ytdl.downloader import DownloadError
 from tg_bot_ytdl.extractor import ExtractionError, VideoFormat, VideoInfo
 from tg_bot_ytdl.handlers import (
+    CHANNEL_ADDED_TEXT,
+    CHANNEL_EXISTS_TEXT,
+    CHANNEL_FAILED_TEXT,
     DOWNLOAD_FAILED_TEXT,
+    DOWNLOAD_HINT_TEXT,
     EXTRACTION_FAILED_TEXT,
     FORMAT_SELECTED_TEXT,
     HELP_TEXT,
@@ -23,6 +28,9 @@ from tg_bot_ytdl.handlers import (
     RATE_LIMITED_TEXT,
     SELECTION_EXPIRED_TEXT,
     START_TEXT,
+    SUBS_EMPTY_TEXT,
+    SUBSCRIPTION_DELETED_TEXT,
+    SUBSCRIPTION_EXPIRED_TEXT,
     TOO_LARGE_TEXT,
     UNEXPECTED_ERROR_TEXT,
     format_duration,
@@ -30,9 +38,15 @@ from tg_bot_ytdl.handlers import (
     handle_format_selected,
     handle_help,
     handle_link,
+    handle_menu_download,
     handle_start,
+    handle_subscription_delete,
+    handle_subscription_open,
+    handle_subscriptions,
 )
-from tg_bot_ytdl.models import DownloadRequest, User
+from tg_bot_ytdl.keyboards import MENU_DOWNLOAD, MENU_SUBSCRIPTIONS
+from tg_bot_ytdl.models import DownloadRequest, Subscription, User
+from tg_bot_ytdl.repository import add_subscription
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +89,8 @@ def _video_format(filesize: int | None = None) -> VideoFormat:
 async def test_handle_start_replies() -> None:
     message = _message("/start")
     await handle_start(message)
-    message.answer.assert_awaited_once_with(START_TEXT)
+    assert message.answer.await_args.args[0] == START_TEXT
+    assert message.answer.await_args.kwargs["reply_markup"] is not None
 
 
 async def test_handle_start_registers_user() -> None:
@@ -89,7 +104,8 @@ async def test_handle_start_registers_user() -> None:
 async def test_handle_help_replies() -> None:
     message = _message("/help")
     await handle_help(message)
-    message.answer.assert_awaited_once_with(HELP_TEXT)
+    assert message.answer.await_args.args[0] == HELP_TEXT
+    assert message.answer.await_args.kwargs["reply_markup"] is not None
 
 
 async def test_handle_link_rejects_non_link() -> None:
@@ -620,3 +636,158 @@ async def test_handle_link_reports_curated_format_count(
 )
 def test_format_duration(seconds: int | None, expected: str) -> None:
     assert format_duration(seconds) == expected
+
+
+def _any_answer(message: AsyncMock, text: str) -> bool:
+    return any(
+        call.args and call.args[0] == text for call in message.answer.await_args_list
+    )
+
+
+def _channel() -> ChannelInfo:
+    return ChannelInfo(
+        channel_id="UC123",
+        url="https://www.youtube.com/@NASA",
+        title="NASA",
+    )
+
+
+async def test_handle_link_saves_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers, "fetch_channel_info", AsyncMock(return_value=_channel())
+    )
+    message = _message("https://www.youtube.com/@NASA", user_id=9)
+
+    await handle_link(message)
+
+    assert _any_answer(message, CHANNEL_ADDED_TEXT.format(title="NASA"))
+    with db.session_scope() as session:
+        subscription = session.scalar(select(Subscription))
+        assert subscription is not None
+        assert subscription.channel_id == "UC123"
+
+
+async def test_handle_link_reports_existing_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers, "fetch_channel_info", AsyncMock(return_value=_channel())
+    )
+    await handle_link(_message("https://www.youtube.com/@NASA", user_id=9))
+    handlers._rate_limiter.reset()
+
+    second = _message("https://www.youtube.com/@NASA", user_id=9)
+    await handle_link(second)
+
+    assert _any_answer(second, CHANNEL_EXISTS_TEXT.format(title="NASA"))
+
+
+async def test_handle_link_handles_channel_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers,
+        "fetch_channel_info",
+        AsyncMock(side_effect=ExtractionError("boom")),
+    )
+    message = _message("https://www.youtube.com/@NASA", user_id=9)
+
+    await handle_link(message)
+
+    message.answer.assert_any_await(CHANNEL_FAILED_TEXT)
+
+
+async def test_handle_menu_download_hints() -> None:
+    message = _message(MENU_DOWNLOAD)
+    await handle_menu_download(message)
+    message.answer.assert_awaited_once_with(DOWNLOAD_HINT_TEXT)
+
+
+async def test_handle_subscriptions_empty() -> None:
+    message = _message(MENU_SUBSCRIPTIONS, user_id=11)
+    await handle_subscriptions(message)
+    message.answer.assert_awaited_once_with(SUBS_EMPTY_TEXT)
+
+
+async def test_handle_subscriptions_lists_channels() -> None:
+    with db.session_scope() as session:
+        add_subscription(session, 11, None, channel_id="UC1", url="u", title="NASA")
+    message = _message(MENU_SUBSCRIPTIONS, user_id=11)
+
+    await handle_subscriptions(message)
+
+    assert message.answer.await_args.args[0] == handlers.SUBS_TITLE_TEXT
+    markup = message.answer.await_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data.startswith("sub:")
+
+
+async def test_handle_subscription_open_shows_channel() -> None:
+    with db.session_scope() as session:
+        subscription, _ = add_subscription(
+            session, 21, None, channel_id="UC1", url="https://x", title="NASA"
+        )
+        sub_id = subscription.id
+    callback = _callback(21, f"sub:{sub_id}")
+
+    await handle_subscription_open(callback)
+
+    callback.answer.assert_awaited_once()
+    assert "NASA" in callback.message.answer.await_args.args[0]
+
+
+async def test_handle_subscription_open_expired() -> None:
+    callback = _callback(21, "sub:999")
+
+    await handle_subscription_open(callback)
+
+    callback.message.answer.assert_awaited_once_with(SUBSCRIPTION_EXPIRED_TEXT)
+
+
+async def test_handle_subscription_delete_removes() -> None:
+    with db.session_scope() as session:
+        subscription, _ = add_subscription(
+            session, 21, None, channel_id="UC1", url="https://x", title="NASA"
+        )
+        sub_id = subscription.id
+    callback = _callback(21, f"subdel:{sub_id}")
+
+    await handle_subscription_delete(callback)
+
+    callback.message.edit_text.assert_awaited_once_with(SUBSCRIPTION_DELETED_TEXT)
+    with db.session_scope() as session:
+        assert session.scalar(select(Subscription)) is None
+
+
+async def test_handle_subscription_delete_expired() -> None:
+    callback = _callback(21, "subdel:999")
+
+    await handle_subscription_delete(callback)
+
+    callback.message.edit_text.assert_awaited_once_with(SUBSCRIPTION_EXPIRED_TEXT)
+
+
+async def test_handle_subscription_delete_falls_back_on_edit_error() -> None:
+    with db.session_scope() as session:
+        subscription, _ = add_subscription(
+            session, 21, None, channel_id="UC1", url="https://x", title="NASA"
+        )
+        sub_id = subscription.id
+    callback = _callback(21, f"subdel:{sub_id}")
+    callback.message.edit_text.side_effect = TelegramBadRequest(
+        method=None, message="bad"
+    )
+
+    await handle_subscription_delete(callback)
+
+    callback.message.answer.assert_awaited_once_with(SUBSCRIPTION_DELETED_TEXT)
+
+
+async def test_handle_subscription_open_without_message() -> None:
+    callback = _callback(21, "sub:1")
+    callback.message = None
+
+    await handle_subscription_open(callback)
+
+    callback.answer.assert_awaited_once()
