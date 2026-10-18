@@ -24,6 +24,8 @@ from tg_bot_ytdl.handlers import (
     FORMAT_SELECTED_TEXT,
     FORMATS_PREPARING_TEXT,
     HELP_TEXT,
+    MORE_END_TEXT,
+    MORE_PROMPT_TEXT,
     NOT_A_LINK_TEXT,
     PROCESSING_TEXT,
     RATE_LIMITED_TEXT,
@@ -45,6 +47,7 @@ from tg_bot_ytdl.handlers import (
     handle_help,
     handle_link,
     handle_menu_download,
+    handle_more_selected,
     handle_section_selected,
     handle_start,
     handle_subscription_delete,
@@ -960,5 +963,111 @@ async def test_handle_video_selected_without_message() -> None:
     callback.message = None
 
     await handle_video_selected(callback)
+
+    callback.answer.assert_awaited_once()
+
+
+def _video_list(count: int) -> list[ChannelVideo]:
+    return [_channel_video(f"vid{i}") for i in range(count)]
+
+
+def _paged(videos: list[ChannelVideo]) -> AsyncMock:
+    async def _fake(url: str, limit: int = 5) -> list[ChannelVideo]:
+        return videos[:limit]
+
+    return AsyncMock(side_effect=_fake)
+
+
+async def test_handle_section_selected_shows_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers, "fetch_channel_videos", _paged(_video_list(7)))
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"sec:{subscription_id}:videos")
+
+    await handle_section_selected(callback)
+
+    assert callback.message.answer_photo.await_count == 5
+    more_kwargs = callback.message.answer.await_args.kwargs
+    assert more_kwargs["reply_markup"].inline_keyboard[0][0].callback_data == (
+        f"more:{subscription_id}:videos:5"
+    )
+
+
+async def test_handle_section_selected_no_more_for_short_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers, "fetch_channel_videos", _paged(_video_list(3)))
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"sec:{subscription_id}:videos")
+
+    await handle_section_selected(callback)
+
+    assert callback.message.answer_photo.await_count == 3
+    assert not _any_answer(callback.message, MORE_PROMPT_TEXT)
+
+
+async def test_handle_more_selected_loads_next_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers, "fetch_channel_videos", _paged(_video_list(12)))
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"more:{subscription_id}:videos:5")
+
+    await handle_more_selected(callback)
+
+    callback.answer.assert_awaited_once()
+    assert callback.message.answer_photo.await_count == 5
+    assert not _any_answer(
+        callback.message, SECTION_LIST_TITLE_TEXT.format(title="NASA")
+    )
+    more_kwargs = callback.message.answer.await_args.kwargs
+    assert more_kwargs["reply_markup"].inline_keyboard[0][0].callback_data == (
+        f"more:{subscription_id}:videos:10"
+    )
+
+
+async def test_handle_more_selected_reports_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers, "fetch_channel_videos", _paged(_video_list(5)))
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"more:{subscription_id}:videos:5")
+
+    await handle_more_selected(callback)
+
+    assert _any_answer(callback.message, MORE_END_TEXT)
+    callback.message.answer_photo.assert_not_awaited()
+
+
+async def test_handle_more_selected_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers,
+        "fetch_channel_videos",
+        AsyncMock(side_effect=ExtractionError("boom")),
+    )
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"more:{subscription_id}:videos:5")
+
+    await handle_more_selected(callback)
+
+    assert _any_answer(callback.message, SECTION_FAILED_TEXT)
+
+
+async def test_handle_more_selected_expired() -> None:
+    callback = _callback(31, "more:999:videos:5")
+
+    await handle_more_selected(callback)
+
+    callback.message.answer.assert_awaited_once_with(SECTION_EXPIRED_TEXT)
+
+
+async def test_handle_more_selected_without_message() -> None:
+    callback = _callback(31, "more:1:videos:5")
+    callback.message = None
+
+    await handle_more_selected(callback)
 
     callback.answer.assert_awaited_once()

@@ -27,6 +27,9 @@ SECTION_CALLBACK_PREFIX = "sec:"
 VIDEO_CALLBACK_PREFIX = "dl:"
 VIDEO_BUTTON_TEXT = "⬇️ Скачать"
 
+MORE_CALLBACK_PREFIX = "more:"
+MORE_BUTTON_TEXT = "🔽 Ещё"
+
 SECTION_LABELS: tuple[tuple[str, str], ...] = (
     (SECTION_VIDEOS, "🎬 Видео"),
     (SECTION_SHORTS, "📱 Шортс"),
@@ -111,6 +114,21 @@ def build_video_keyboard(video_id: str) -> InlineKeyboardMarkup:
     builder.button(
         text=VIDEO_BUTTON_TEXT,
         callback_data=f"{VIDEO_CALLBACK_PREFIX}{video_id}",
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_more_keyboard(
+    subscription_id: int,
+    section: str,
+    offset: int,
+) -> InlineKeyboardMarkup:
+    """Build the "load more" button for a channel video list."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=MORE_BUTTON_TEXT,
+        callback_data=f"{MORE_CALLBACK_PREFIX}{subscription_id}:{section}:{offset}",
     )
     builder.adjust(1)
     return builder.as_markup()
