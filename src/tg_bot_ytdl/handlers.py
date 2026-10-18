@@ -2,10 +2,17 @@
 # SPDX-License-Identifier: MIT
 """Command handlers for the bot."""
 
+import tempfile
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
+from tg_bot_ytdl.downloader import (
+    MAX_FILE_SIZE,
+    DownloadError,
+    fetch_format,
+)
 from tg_bot_ytdl.extractor import (
     ExtractionError,
     VideoInfo,
@@ -15,6 +22,8 @@ from tg_bot_ytdl.extractor import (
 from tg_bot_ytdl.keyboards import CALLBACK_PREFIX, build_formats_keyboard
 
 router = Router(name="common")
+
+_last_video: dict[int, VideoInfo] = {}
 
 START_TEXT = (
     "Привет! Отправь мне ссылку на видео YouTube, "
@@ -57,6 +66,17 @@ EXTRACTION_FAILED_TEXT = (
 
 FORMAT_SELECTED_TEXT = "Формат выбран."
 
+DOWNLOADING_TEXT = "Скачиваю файл..."
+
+TOO_LARGE_TEXT = (
+    "Файл слишком большой для отправки через Telegram "
+    "(лимит 50 МБ). Выбери формат меньшего размера."
+)
+
+DOWNLOAD_FAILED_TEXT = "Не удалось скачать файл. Попробуй другой формат."
+
+SELECTION_EXPIRED_TEXT = "Не удалось найти выбранный формат. Отправь ссылку заново."
+
 
 def format_duration(seconds: int | None) -> str:
     """Format a duration in seconds as ``mm:ss`` / ``h:mm:ss``."""
@@ -95,6 +115,7 @@ async def handle_link(message: Message) -> None:
     except ExtractionError:
         await message.answer(EXTRACTION_FAILED_TEXT)
         return
+    _last_video[message.chat.id] = info
     await message.answer(
         format_info_message(info),
         reply_markup=build_formats_keyboard(info.formats),
@@ -103,5 +124,32 @@ async def handle_link(message: Message) -> None:
 
 @router.callback_query(F.data.startswith(CALLBACK_PREFIX))
 async def handle_format_selected(callback: CallbackQuery) -> None:
-    """Acknowledge a format selection from the inline keyboard."""
+    """Download the selected format and send it as a document."""
     await callback.answer(FORMAT_SELECTED_TEXT)
+    message = callback.message
+    if message is None:
+        return
+
+    info = _last_video.get(message.chat.id)
+    format_id = (callback.data or "")[len(CALLBACK_PREFIX) :]
+    fmt = None
+    if info is not None:
+        fmt = next((f for f in info.formats if f.format_id == format_id), None)
+    if info is None or fmt is None:
+        await message.answer(SELECTION_EXPIRED_TEXT)
+        return
+
+    if fmt.filesize and fmt.filesize > MAX_FILE_SIZE:
+        await message.answer(TOO_LARGE_TEXT)
+        return
+
+    await message.answer(DOWNLOADING_TEXT)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = await fetch_format(info.url, format_id, tmp)
+            if path.stat().st_size > MAX_FILE_SIZE:
+                await message.answer(TOO_LARGE_TEXT)
+                return
+            await message.answer_document(FSInputFile(path))
+    except DownloadError:
+        await message.answer(DOWNLOAD_FAILED_TEXT)
