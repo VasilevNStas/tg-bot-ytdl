@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
 
 from tg_bot_ytdl import db, handlers
-from tg_bot_ytdl.channels import ChannelInfo
+from tg_bot_ytdl.channels import ChannelInfo, ChannelVideo
 from tg_bot_ytdl.downloader import DownloadError
 from tg_bot_ytdl.extractor import ExtractionError, VideoFormat, VideoInfo
 from tg_bot_ytdl.handlers import (
@@ -22,10 +22,16 @@ from tg_bot_ytdl.handlers import (
     DOWNLOAD_HINT_TEXT,
     EXTRACTION_FAILED_TEXT,
     FORMAT_SELECTED_TEXT,
+    FORMATS_PREPARING_TEXT,
     HELP_TEXT,
     NOT_A_LINK_TEXT,
     PROCESSING_TEXT,
     RATE_LIMITED_TEXT,
+    SECTION_EMPTY_TEXT,
+    SECTION_EXPIRED_TEXT,
+    SECTION_FAILED_TEXT,
+    SECTION_LIST_TITLE_TEXT,
+    SECTION_LOADING_TEXT,
     SELECTION_EXPIRED_TEXT,
     START_TEXT,
     SUBS_EMPTY_TEXT,
@@ -39,10 +45,12 @@ from tg_bot_ytdl.handlers import (
     handle_help,
     handle_link,
     handle_menu_download,
+    handle_section_selected,
     handle_start,
     handle_subscription_delete,
     handle_subscription_open,
     handle_subscriptions,
+    handle_video_selected,
 )
 from tg_bot_ytdl.keyboards import MENU_DOWNLOAD, MENU_SUBSCRIPTIONS
 from tg_bot_ytdl.models import DownloadRequest, Subscription, User
@@ -789,5 +797,168 @@ async def test_handle_subscription_open_without_message() -> None:
     callback.message = None
 
     await handle_subscription_open(callback)
+
+    callback.answer.assert_awaited_once()
+
+
+def _channel_video(video_id: str = "dQw4w9WgXcQ") -> ChannelVideo:
+    return ChannelVideo(
+        video_id=video_id,
+        title="Rick Astley",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        duration=213,
+    )
+
+
+def _saved_subscription(user_id: int = 31) -> int:
+    with db.session_scope() as session:
+        subscription, _ = add_subscription(
+            session,
+            user_id,
+            None,
+            channel_id="UC1",
+            url="https://www.youtube.com/@NASA",
+            title="NASA",
+        )
+        return subscription.id
+
+
+async def test_handle_section_selected_sends_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video = _channel_video()
+    monkeypatch.setattr(
+        handlers, "fetch_channel_videos", AsyncMock(return_value=[video])
+    )
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"sec:{subscription_id}:videos")
+
+    await handle_section_selected(callback)
+
+    callback.answer.assert_awaited_once()
+    assert _any_answer(callback.message, SECTION_LOADING_TEXT)
+    assert _any_answer(callback.message, SECTION_LIST_TITLE_TEXT.format(title="NASA"))
+    photo_kwargs = callback.message.answer_photo.await_args.kwargs
+    assert photo_kwargs["photo"] == video.thumbnail_url
+    assert photo_kwargs["reply_markup"].inline_keyboard[0][0].callback_data == (
+        "dl:dQw4w9WgXcQ"
+    )
+
+
+async def test_handle_section_selected_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handlers, "fetch_channel_videos", AsyncMock(return_value=[]))
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"sec:{subscription_id}:shorts")
+
+    await handle_section_selected(callback)
+
+    assert _any_answer(callback.message, SECTION_EMPTY_TEXT)
+    callback.message.answer_photo.assert_not_awaited()
+
+
+async def test_handle_section_selected_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers,
+        "fetch_channel_videos",
+        AsyncMock(side_effect=ExtractionError("boom")),
+    )
+    subscription_id = _saved_subscription()
+    callback = _callback(31, f"sec:{subscription_id}:streams")
+
+    await handle_section_selected(callback)
+
+    assert _any_answer(callback.message, SECTION_FAILED_TEXT)
+
+
+async def test_handle_section_selected_expired() -> None:
+    callback = _callback(31, "sec:999:videos")
+
+    await handle_section_selected(callback)
+
+    callback.message.answer.assert_awaited_once_with(SECTION_EXPIRED_TEXT)
+
+
+async def test_handle_section_selected_without_message() -> None:
+    callback = _callback(31, "sec:1:videos")
+    callback.message = None
+
+    await handle_section_selected(callback)
+
+    callback.answer.assert_awaited_once()
+
+
+def _video_info() -> VideoInfo:
+    return VideoInfo(
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        title="Rick Astley",
+        duration=213,
+        uploader="Rick",
+        formats=[_video_format()],
+        thumbnail="https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
+    )
+
+
+async def test_handle_video_selected_shows_formats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers, "fetch_video_info", AsyncMock(return_value=_video_info())
+    )
+    callback = _callback(41, "dl:dQw4w9WgXcQ")
+
+    await handle_video_selected(callback)
+
+    callback.answer.assert_awaited_once_with(FORMATS_PREPARING_TEXT)
+    photo_kwargs = callback.message.answer_photo.await_args.kwargs
+    assert photo_kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "fmt:137"
+    assert handlers._last_video[41].title == "Rick Astley"
+
+
+async def test_handle_video_selected_handles_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        handlers,
+        "fetch_video_info",
+        AsyncMock(side_effect=ExtractionError("boom")),
+    )
+    callback = _callback(41, "dl:abc")
+
+    await handle_video_selected(callback)
+
+    assert _any_answer(callback.message, EXTRACTION_FAILED_TEXT)
+
+
+async def test_handle_video_selected_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = AsyncMock(return_value=_video_info())
+    monkeypatch.setattr(handlers, "fetch_video_info", fetch)
+    handlers._rate_limiter.allow(41)
+    callback = _callback(41, "dl:dQw4w9WgXcQ")
+
+    await handle_video_selected(callback)
+
+    callback.message.answer.assert_awaited_once_with(RATE_LIMITED_TEXT)
+    fetch.assert_not_awaited()
+
+
+async def test_handle_video_selected_empty_id() -> None:
+    callback = _callback(41, "dl:")
+
+    await handle_video_selected(callback)
+
+    callback.message.answer.assert_awaited_once_with(SECTION_EXPIRED_TEXT)
+
+
+async def test_handle_video_selected_without_message() -> None:
+    callback = _callback(41, "dl:abc")
+    callback.message = None
+
+    await handle_video_selected(callback)
 
     callback.answer.assert_awaited_once()

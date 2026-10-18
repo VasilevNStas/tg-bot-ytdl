@@ -11,12 +11,16 @@ from tg_bot_ytdl.keyboards import (
     MENU_DOWNLOAD,
     MENU_HELP,
     MENU_SUBSCRIPTIONS,
+    SECTION_CALLBACK_PREFIX,
     SUBSCRIPTION_CALLBACK_PREFIX,
     SUBSCRIPTION_DELETE_PREFIX,
+    VIDEO_CALLBACK_PREFIX,
+    build_channel_sections_keyboard,
     build_formats_keyboard,
     build_main_menu_keyboard,
     build_subscription_actions_keyboard,
     build_subscriptions_keyboard,
+    build_video_keyboard,
     channel_button_label,
     format_button_label,
     format_filesize,
@@ -179,3 +183,23 @@ def test_channel_button_label_truncates() -> None:
     assert channel_button_label("  NASA   TV ") == "NASA TV"
     assert channel_button_label("") == "Канал"
     assert len(channel_button_label("x" * 100)) == 40
+
+
+def test_sections_keyboard_has_sections_and_delete() -> None:
+    markup = build_channel_sections_keyboard(4)
+    rows = markup.inline_keyboard
+
+    assert len(rows) == 4
+    assert rows[0][0].callback_data == f"{SECTION_CALLBACK_PREFIX}4:videos"
+    assert rows[1][0].callback_data == f"{SECTION_CALLBACK_PREFIX}4:shorts"
+    assert rows[2][0].callback_data == f"{SECTION_CALLBACK_PREFIX}4:streams"
+    assert rows[3][0].callback_data == f"{SUBSCRIPTION_DELETE_PREFIX}4"
+
+
+def test_video_keyboard_has_download_button() -> None:
+    markup = build_video_keyboard("dQw4w9WgXcQ")
+
+    assert (
+        markup.inline_keyboard[0][0].callback_data
+        == f"{VIDEO_CALLBACK_PREFIX}dQw4w9WgXcQ"
+    )
