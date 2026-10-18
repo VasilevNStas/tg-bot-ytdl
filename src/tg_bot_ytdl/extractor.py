@@ -35,6 +35,9 @@ class VideoFormat:
     resolution: str | None
     filesize: int | None
     note: str | None
+    height: int | None = None
+    has_video: bool = False
+    has_audio: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class VideoInfo:
     duration: int | None
     uploader: str | None
     formats: list[VideoFormat]
+    thumbnail: str | None = None
 
 
 def is_supported_url(url: str) -> bool:
@@ -56,6 +60,10 @@ def is_supported_url(url: str) -> bool:
     return parsed.hostname in _ALLOWED_HOSTS
 
 
+def _has_stream(codec: Any) -> bool:
+    return bool(codec) and codec != "none"
+
+
 def _build_format(raw: dict[str, Any]) -> VideoFormat:
     return VideoFormat(
         format_id=str(raw.get("format_id", "")),
@@ -63,6 +71,9 @@ def _build_format(raw: dict[str, Any]) -> VideoFormat:
         resolution=raw.get("resolution") or raw.get("format_note"),
         filesize=raw.get("filesize") or raw.get("filesize_approx"),
         note=raw.get("format_note"),
+        height=raw.get("height"),
+        has_video=_has_stream(raw.get("vcodec")),
+        has_audio=_has_stream(raw.get("acodec")),
     )
 
 
@@ -73,6 +84,7 @@ def _build_info(raw: dict[str, Any], url: str) -> VideoInfo:
         duration=raw.get("duration"),
         uploader=raw.get("uploader"),
         formats=[_build_format(f) for f in raw.get("formats") or []],
+        thumbnail=raw.get("thumbnail"),
     )
 
 

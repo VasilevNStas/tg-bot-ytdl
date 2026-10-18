@@ -11,6 +11,7 @@ from tg_bot_ytdl.keyboards import (
     build_formats_keyboard,
     format_button_label,
     format_filesize,
+    select_formats,
 )
 
 
@@ -20,6 +21,9 @@ def _fmt(
     resolution: str | None = "1280x720",
     filesize: int | None = None,
     note: str | None = None,
+    height: int | None = 720,
+    has_video: bool = True,
+    has_audio: bool = True,
 ) -> VideoFormat:
     return VideoFormat(
         format_id=format_id,
@@ -27,6 +31,9 @@ def _fmt(
         resolution=resolution,
         filesize=filesize,
         note=note,
+        height=height,
+        has_video=has_video,
+        has_audio=has_audio,
     )
 
 
@@ -72,3 +79,44 @@ def test_button_label_falls_back_to_note() -> None:
 )
 def test_format_filesize(size: int | None, expected: str) -> None:
     assert format_filesize(size) == expected
+
+
+def test_select_formats_drops_storyboards() -> None:
+    storyboard = _fmt("sb0", ext="mhtml", has_video=False, has_audio=False)
+    assert select_formats([storyboard, _fmt()]) == [_fmt()]
+
+
+def test_select_formats_deduplicates_same_quality() -> None:
+    small = _fmt("137", filesize=1000)
+    large = _fmt("399", filesize=2000)
+    selected = select_formats([small, large])
+    assert len(selected) == 1
+    assert selected[0].format_id == "399"
+
+
+def test_select_formats_orders_video_before_audio() -> None:
+    audio = _fmt(
+        "140", ext="m4a", resolution="audio only", height=None, has_video=False
+    )
+    video = _fmt("137", height=1080, resolution="1920x1080")
+    selected = select_formats([audio, video])
+    assert [fmt.format_id for fmt in selected] == ["137", "140"]
+
+
+def test_select_formats_limits_to_max() -> None:
+    formats = [_fmt(str(i), height=i + 1, resolution=f"{i + 1}p") for i in range(30)]
+    assert len(select_formats(formats)) == MAX_FORMAT_BUTTONS
+
+
+def test_label_marks_audio_only() -> None:
+    label = format_button_label(
+        _fmt(
+            "140",
+            ext="m4a",
+            resolution="audio only",
+            height=None,
+            has_video=False,
+            note="medium",
+        )
+    )
+    assert label.startswith("аудио medium")

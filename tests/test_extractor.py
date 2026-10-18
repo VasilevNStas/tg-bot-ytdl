@@ -52,12 +52,16 @@ class _FakeYDL:
             "title": "Test Video",
             "duration": 125,
             "uploader": "Test Channel",
+            "thumbnail": "https://i.ytimg.com/vi/x/hqdefault.jpg",
             "formats": [
                 {
                     "format_id": "18",
                     "ext": "mp4",
                     "resolution": "360p",
                     "filesize": 1024,
+                    "height": 360,
+                    "vcodec": "avc1.42001E",
+                    "acodec": "mp4a.40.2",
                 }
             ],
         }
@@ -74,6 +78,10 @@ def test_extract_info_builds_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(info.formats) == 1
     assert info.formats[0].format_id == "18"
     assert info.formats[0].filesize == 1024
+    assert info.formats[0].height == 360
+    assert info.formats[0].has_video is True
+    assert info.formats[0].has_audio is True
+    assert info.thumbnail == "https://i.ytimg.com/vi/x/hqdefault.jpg"
 
 
 class _FailingYDL(_FakeYDL):

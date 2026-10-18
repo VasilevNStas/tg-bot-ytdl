@@ -108,3 +108,34 @@ async def test_fetch_format_times_out(
 
     with pytest.raises(DownloadError):
         await downloader.fetch_format("https://youtu.be/x", "137", tmp_path)
+
+
+def test_download_format_merges_audio_for_video_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _CapturingYDL(_FakeYDL):
+        def __init__(self, params: dict[str, Any]) -> None:
+            super().__init__(params)
+            captured.update(params)
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _CapturingYDL)
+
+    download_format("https://youtu.be/x", "137", tmp_path, merge_audio=True)
+
+    assert captured["format"] == "137+bestaudio/137"
+
+
+def test_download_format_prefers_requested_download_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    merged = tmp_path / "abc.mkv"
+
+    class _MergedYDL(_FakeYDL):
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            return {"requested_downloads": [{"filepath": str(merged)}]}
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _MergedYDL)
+
+    assert download_format("https://youtu.be/x", "137", tmp_path) == merged
