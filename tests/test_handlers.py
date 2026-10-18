@@ -2,19 +2,24 @@
 # SPDX-License-Identifier: MIT
 """Tests for command and link handlers."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from tg_bot_ytdl import handlers
+from tg_bot_ytdl.downloader import DownloadError
 from tg_bot_ytdl.extractor import ExtractionError, VideoFormat, VideoInfo
 from tg_bot_ytdl.handlers import (
+    DOWNLOAD_FAILED_TEXT,
     EXTRACTION_FAILED_TEXT,
     FORMAT_SELECTED_TEXT,
     HELP_TEXT,
     NOT_A_LINK_TEXT,
     PROCESSING_TEXT,
+    SELECTION_EXPIRED_TEXT,
     START_TEXT,
+    TOO_LARGE_TEXT,
     format_duration,
     handle_format_selected,
     handle_help,
@@ -23,10 +28,32 @@ from tg_bot_ytdl.handlers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_last_video() -> None:
+    handlers._last_video.clear()
+
+
 def _message(text: str) -> AsyncMock:
     message = AsyncMock()
     message.text = text
     return message
+
+
+def _callback(chat_id: int, data: str) -> AsyncMock:
+    callback = AsyncMock()
+    callback.data = data
+    callback.message.chat.id = chat_id
+    return callback
+
+
+def _video_format(filesize: int | None = None) -> VideoFormat:
+    return VideoFormat(
+        format_id="137",
+        ext="mp4",
+        resolution="1280x720",
+        filesize=filesize,
+        note=None,
+    )
 
 
 async def test_handle_start_replies() -> None:
@@ -103,9 +130,111 @@ async def test_handle_link_attaches_formats_keyboard(
 
 
 async def test_handle_format_selected_answers() -> None:
-    callback = AsyncMock()
+    callback = _callback(1, "fmt:137")
     await handle_format_selected(callback)
     callback.answer.assert_awaited_once_with(FORMAT_SELECTED_TEXT)
+    callback.message.answer.assert_awaited_once_with(SELECTION_EXPIRED_TEXT)
+
+
+async def test_handle_format_selected_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+
+    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+        path = Path(str(dest_dir)) / f"{format_id}.mp4"
+        path.write_bytes(b"data")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    callback.message.answer.assert_any_await(handlers.DOWNLOADING_TEXT)
+    callback.message.answer_document.assert_awaited_once()
+
+
+async def test_handle_format_selected_rejects_large_known_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format(filesize=handlers.MAX_FILE_SIZE + 1)],
+    )
+    handlers._last_video[1] = info
+
+    async def _unused_download(*args: object, **kwargs: object) -> Path:
+        raise AssertionError("download should not be called")
+
+    monkeypatch.setattr(handlers, "fetch_format", _unused_download)
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    callback.message.answer.assert_awaited_once_with(TOO_LARGE_TEXT)
+    callback.message.answer_document.assert_not_awaited()
+
+
+async def test_handle_format_selected_rejects_large_actual_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+    monkeypatch.setattr(handlers, "MAX_FILE_SIZE", 2)
+
+    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+        path = Path(str(dest_dir)) / f"{format_id}.mp4"
+        path.write_bytes(b"too-big")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    callback.message.answer.assert_any_await(TOO_LARGE_TEXT)
+    callback.message.answer_document.assert_not_awaited()
+
+
+async def test_handle_format_selected_download_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+    monkeypatch.setattr(
+        handlers,
+        "fetch_format",
+        AsyncMock(side_effect=DownloadError("boom")),
+    )
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    callback.message.answer.assert_any_await(DOWNLOAD_FAILED_TEXT)
+    callback.message.answer_document.assert_not_awaited()
 
 
 async def test_handle_link_handles_extraction_error(
