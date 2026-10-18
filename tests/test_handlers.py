@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
 
 from tg_bot_ytdl import db, handlers
@@ -65,6 +66,9 @@ def _video_format(filesize: int | None = None) -> VideoFormat:
         resolution="1280x720",
         filesize=filesize,
         note=None,
+        height=720,
+        has_video=True,
+        has_audio=True,
     )
 
 
@@ -131,6 +135,9 @@ async def test_handle_link_attaches_formats_keyboard(
         resolution="1280x720",
         filesize=None,
         note=None,
+        height=720,
+        has_video=True,
+        has_audio=True,
     )
     info = VideoInfo(
         url="https://youtu.be/x",
@@ -168,7 +175,13 @@ async def test_handle_format_selected_downloads(
     )
     handlers._last_video[1] = info
 
-    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+    ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
         return path
@@ -194,7 +207,13 @@ async def test_handle_format_selected_records_download(
     )
     handlers._last_video[1] = info
 
-    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+    ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
         return path
@@ -248,7 +267,13 @@ async def test_handle_format_selected_rejects_large_actual_size(
     handlers._last_video[1] = info
     monkeypatch.setattr(handlers, "MAX_FILE_SIZE", 2)
 
-    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+    ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"too-big")
         return path
@@ -345,7 +370,13 @@ async def test_handle_format_selected_without_user(
     )
     handlers._last_video[1] = info
 
-    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+    ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
         return path
@@ -415,6 +446,80 @@ async def test_handle_error_swallows_notify_failure() -> None:
     )
 
     assert await handle_error(event) is True
+
+
+async def test_handle_link_sends_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+        thumbnail="https://i.ytimg.com/vi/x/hqdefault.jpg",
+    )
+    monkeypatch.setattr(handlers, "fetch_video_info", AsyncMock(return_value=info))
+    message = _message("https://youtu.be/x")
+
+    await handle_link(message)
+
+    message.answer_photo.assert_awaited_once()
+    assert message.answer_photo.await_args.kwargs["photo"] == info.thumbnail
+    message.answer.assert_awaited_once_with(PROCESSING_TEXT)
+
+
+async def test_handle_link_falls_back_when_thumbnail_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+        thumbnail="https://i.ytimg.com/vi/x/hqdefault.jpg",
+    )
+    monkeypatch.setattr(handlers, "fetch_video_info", AsyncMock(return_value=info))
+    message = _message("https://youtu.be/x")
+    message.answer_photo.side_effect = TelegramBadRequest(
+        method=None, message="bad photo"
+    )
+
+    await handle_link(message)
+
+    message.answer_photo.assert_awaited_once()
+    assert message.answer.await_count == 2
+    assert message.answer.await_args.args[0] == handlers.format_info_message(info)
+
+
+async def test_handle_link_reports_curated_format_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    duplicate = _video_format(filesize=1024)
+    storyboard = VideoFormat(
+        format_id="sb0",
+        ext="mhtml",
+        resolution=None,
+        filesize=None,
+        note=None,
+    )
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format(), duplicate, storyboard],
+    )
+    monkeypatch.setattr(handlers, "fetch_video_info", AsyncMock(return_value=info))
+    message = _message("https://youtu.be/x")
+
+    await handle_link(message)
+
+    caption = message.answer.await_args.args[0]
+    assert "Доступно форматов: 1" in caption
+    markup = message.answer.await_args.kwargs["reply_markup"]
+    assert len(markup.inline_keyboard) == 1
 
 
 @pytest.mark.parametrize(

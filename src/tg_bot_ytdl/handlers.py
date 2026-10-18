@@ -4,8 +4,10 @@
 
 import logging
 import tempfile
+from dataclasses import replace
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, Message
 from aiogram.types import User as TelegramUser
@@ -23,7 +25,11 @@ from tg_bot_ytdl.extractor import (
     fetch_video_info,
     is_supported_url,
 )
-from tg_bot_ytdl.keyboards import CALLBACK_PREFIX, build_formats_keyboard
+from tg_bot_ytdl.keyboards import (
+    CALLBACK_PREFIX,
+    build_formats_keyboard,
+    select_formats,
+)
 from tg_bot_ytdl.ratelimit import RateLimiter
 from tg_bot_ytdl.repository import (
     STATUS_FAILED,
@@ -148,6 +154,23 @@ def _record_download(
         )
 
 
+async def _send_video_summary(message: Message, info: VideoInfo) -> None:
+    """Send the thumbnail with the caption and format keyboard."""
+    caption = format_info_message(info)
+    keyboard = build_formats_keyboard(info.formats)
+    if info.thumbnail:
+        try:
+            await message.answer_photo(
+                photo=info.thumbnail,
+                caption=caption,
+                reply_markup=keyboard,
+            )
+            return
+        except TelegramBadRequest:
+            logger.warning("Could not send thumbnail, falling back to text")
+    await message.answer(caption, reply_markup=keyboard)
+
+
 @router.message(F.text)
 async def handle_link(message: Message) -> None:
     """Validate a YouTube link and reply with its metadata."""
@@ -169,11 +192,9 @@ async def handle_link(message: Message) -> None:
     except ExtractionError:
         await message.answer(EXTRACTION_FAILED_TEXT)
         return
+    info = replace(info, formats=select_formats(info.formats))
     _last_video[message.chat.id] = info
-    await message.answer(
-        format_info_message(info),
-        reply_markup=build_formats_keyboard(info.formats),
-    )
+    await _send_video_summary(message, info)
 
 
 @router.callback_query(F.data.startswith(CALLBACK_PREFIX))
@@ -202,7 +223,12 @@ async def handle_format_selected(callback: CallbackQuery) -> None:
     await message.answer(DOWNLOADING_TEXT)
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            path = await fetch_format(info.url, format_id, tmp)
+            path = await fetch_format(
+                info.url,
+                format_id,
+                tmp,
+                merge_audio=fmt.has_video and not fmt.has_audio,
+            )
             if path.stat().st_size > MAX_FILE_SIZE:
                 _record_download(user, info, fmt, STATUS_TOO_LARGE)
                 await message.answer(TOO_LARGE_TEXT)
