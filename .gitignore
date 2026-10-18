@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# SQLite / runtime data
+*.db
+*.sqlite
+*.sqlite3
+data/
+downloads/
+tmp/
+*.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Local OKF knowledge base
+.opencode/
