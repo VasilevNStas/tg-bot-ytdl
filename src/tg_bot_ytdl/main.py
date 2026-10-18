@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     """Create the bot and dispatcher and start long-polling."""
     settings = get_settings()
-    bot = Bot(token=settings.bot_token)
+    bot = Bot(token=settings.require_bot_token())
     dp = Dispatcher()
 
     logger.info("Starting polling...")
