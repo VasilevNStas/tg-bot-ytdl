@@ -181,6 +181,7 @@ async def test_handle_format_selected_downloads(
         dest_dir: object,
         *,
         merge_audio: bool = False,
+        audio_only: bool = False,
     ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
@@ -213,6 +214,7 @@ async def test_handle_format_selected_records_download(
         dest_dir: object,
         *,
         merge_audio: bool = False,
+        audio_only: bool = False,
     ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
@@ -273,6 +275,7 @@ async def test_handle_format_selected_rejects_large_actual_size(
         dest_dir: object,
         *,
         merge_audio: bool = False,
+        audio_only: bool = False,
     ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"too-big")
@@ -285,6 +288,92 @@ async def test_handle_format_selected_rejects_large_actual_size(
 
     callback.message.answer.assert_any_await(TOO_LARGE_TEXT)
     callback.message.answer_document.assert_not_awaited()
+
+
+async def test_handle_format_selected_uses_title_as_filename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Rick Astley - Never Gonna Give You Up (Official Video)",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+        audio_only: bool = False,
+    ) -> Path:
+        path = Path(str(dest_dir)) / f"{format_id}.mp4"
+        path.write_bytes(b"data")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:137")
+
+    await handle_format_selected(callback)
+
+    document = callback.message.answer_document.await_args.args[0]
+    assert (
+        document.filename
+        == "Rick Astley - Never Gonna Give You Up (Official Video).mp4"
+    )
+
+
+async def test_handle_format_selected_requests_mp3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio = VideoFormat(
+        format_id="mp3",
+        ext="mp3",
+        resolution=None,
+        filesize=None,
+        note=None,
+        has_audio=True,
+    )
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[audio],
+    )
+    handlers._last_video[1] = info
+    captured: dict[str, bool] = {}
+
+    async def _fake_download(
+        url: str,
+        format_id: str,
+        dest_dir: object,
+        *,
+        merge_audio: bool = False,
+        audio_only: bool = False,
+    ) -> Path:
+        captured["audio_only"] = audio_only
+        path = Path(str(dest_dir)) / f"{format_id}.mp3"
+        path.write_bytes(b"data")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:mp3")
+
+    await handle_format_selected(callback)
+
+    assert captured["audio_only"] is True
+    document = callback.message.answer_document.await_args.args[0]
+    assert document.filename == "Test Video.mp3"
+
+
+def test_document_filename_sanitizes_title() -> None:
+    assert handlers.document_filename('a/b:c*?"<>|', ".mp4") == "a b c.mp4"
+    assert handlers.document_filename("   ", ".mp3") == "video.mp3"
+    assert len(handlers.document_filename("x" * 200, ".mp4")) == 68
 
 
 async def test_handle_format_selected_download_error(
@@ -376,6 +465,7 @@ async def test_handle_format_selected_without_user(
         dest_dir: object,
         *,
         merge_audio: bool = False,
+        audio_only: bool = False,
     ) -> Path:
         path = Path(str(dest_dir)) / f"{format_id}.mp4"
         path.write_bytes(b"data")
@@ -490,7 +580,9 @@ async def test_handle_link_falls_back_when_thumbnail_fails(
 
     message.answer_photo.assert_awaited_once()
     assert message.answer.await_count == 2
-    assert message.answer.await_args.args[0] == handlers.format_info_message(info)
+    caption = message.answer.await_args.args[0]
+    assert caption.startswith("Test Video")
+    assert "Доступно форматов: 2" in caption
 
 
 async def test_handle_link_reports_curated_format_count(
@@ -517,9 +609,9 @@ async def test_handle_link_reports_curated_format_count(
     await handle_link(message)
 
     caption = message.answer.await_args.args[0]
-    assert "Доступно форматов: 1" in caption
+    assert "Доступно форматов: 2" in caption
     markup = message.answer.await_args.kwargs["reply_markup"]
-    assert len(markup.inline_keyboard) == 1
+    assert len(markup.inline_keyboard) == 2
 
 
 @pytest.mark.parametrize(

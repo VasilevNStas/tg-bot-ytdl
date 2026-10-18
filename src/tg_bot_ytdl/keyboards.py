@@ -9,6 +9,7 @@ from tg_bot_ytdl.extractor import VideoFormat
 
 CALLBACK_PREFIX = "fmt:"
 MAX_FORMAT_BUTTONS = 20
+MP3_FORMAT_ID = "mp3"
 
 
 def format_filesize(size: int | None) -> str:
@@ -34,34 +35,30 @@ def format_button_label(fmt: VideoFormat) -> str:
     return label
 
 
-def _is_playable(fmt: VideoFormat) -> bool:
-    """Return ``True`` for real audio/video streams (not storyboards)."""
-    if fmt.ext == "mhtml" or fmt.format_id.startswith("sb"):
-        return False
-    return fmt.has_video or fmt.has_audio
-
-
 def select_formats(formats: list[VideoFormat]) -> list[VideoFormat]:
-    """Filter, deduplicate and rank formats for display in the keyboard."""
-    best: dict[tuple[bool, bool, int], VideoFormat] = {}
+    """Pick MP4 video qualities and add a single MP3 audio option."""
+    best: dict[int, VideoFormat] = {}
     for fmt in formats:
-        if not _is_playable(fmt):
+        if fmt.ext != "mp4" or not fmt.has_video or not fmt.height:
             continue
-        key = (fmt.has_video, fmt.has_audio, fmt.height or 0)
-        current = best.get(key)
+        current = best.get(fmt.height)
         if current is None or (fmt.filesize or 0) > (current.filesize or 0):
-            best[key] = fmt
-    ordered = sorted(
-        best.values(),
-        key=lambda fmt: (
-            fmt.has_video,
-            fmt.has_audio,
-            fmt.height or 0,
-            fmt.filesize or 0,
-        ),
-        reverse=True,
-    )
-    return ordered[:MAX_FORMAT_BUTTONS]
+            best[fmt.height] = fmt
+
+    videos = sorted(best.values(), key=lambda fmt: fmt.height or 0, reverse=True)
+    selected = videos[: MAX_FORMAT_BUTTONS - 1]
+    if selected or any(fmt.has_audio for fmt in formats):
+        selected.append(
+            VideoFormat(
+                format_id=MP3_FORMAT_ID,
+                ext="mp3",
+                resolution=None,
+                filesize=None,
+                note=None,
+                has_audio=True,
+            )
+        )
+    return selected
 
 
 def build_formats_keyboard(
