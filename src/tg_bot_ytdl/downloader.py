@@ -9,6 +9,7 @@ from typing import Any
 import yt_dlp
 
 MAX_FILE_SIZE = 50 * 1024 * 1024
+DOWNLOAD_TIMEOUT = 120.0
 
 
 class DownloadError(Exception):
@@ -36,4 +37,10 @@ def download_format(url: str, format_id: str, dest_dir: str | Path) -> Path:
 
 async def fetch_format(url: str, format_id: str, dest_dir: str | Path) -> Path:
     """Async wrapper around :func:`download_format` (runs in a worker thread)."""
-    return await asyncio.to_thread(download_format, url, format_id, dest_dir)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(download_format, url, format_id, dest_dir),
+            timeout=DOWNLOAD_TIMEOUT,
+        )
+    except TimeoutError as exc:
+        raise DownloadError(str(exc)) from exc

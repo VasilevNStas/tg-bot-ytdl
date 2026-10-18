@@ -86,3 +86,17 @@ def test_extract_info_wraps_download_error(monkeypatch: pytest.MonkeyPatch) -> N
 
     with pytest.raises(ExtractionError):
         extract_info("https://youtu.be/dQw4w9WgXcQ")
+
+
+async def test_fetch_video_info_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    def _slow(_url: str) -> object:
+        time.sleep(0.5)
+        return object()
+
+    monkeypatch.setattr(extractor, "extract_info", _slow)
+    monkeypatch.setattr(extractor, "EXTRACTION_TIMEOUT", 0.01)
+
+    with pytest.raises(ExtractionError):
+        await extractor.fetch_video_info("https://youtu.be/dQw4w9WgXcQ")
