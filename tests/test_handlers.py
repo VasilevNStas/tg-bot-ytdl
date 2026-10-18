@@ -3,6 +3,7 @@
 """Tests for command and link handlers."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,7 +23,9 @@ from tg_bot_ytdl.handlers import (
     SELECTION_EXPIRED_TEXT,
     START_TEXT,
     TOO_LARGE_TEXT,
+    UNEXPECTED_ERROR_TEXT,
     format_duration,
+    handle_error,
     handle_format_selected,
     handle_help,
     handle_link,
@@ -317,6 +320,101 @@ async def test_handle_link_rate_limits_user(
     await handle_link(second)
 
     second.answer.assert_awaited_once_with(RATE_LIMITED_TEXT)
+
+
+async def test_handle_link_without_user() -> None:
+    message = AsyncMock()
+    message.text = "привет"
+    message.from_user = None
+    message.chat.id = 1
+
+    await handle_link(message)
+
+    message.answer.assert_awaited_once_with(NOT_A_LINK_TEXT)
+
+
+async def test_handle_format_selected_without_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[_video_format()],
+    )
+    handlers._last_video[1] = info
+
+    async def _fake_download(url: str, format_id: str, dest_dir: object) -> Path:
+        path = Path(str(dest_dir)) / f"{format_id}.mp4"
+        path.write_bytes(b"data")
+        return path
+
+    monkeypatch.setattr(handlers, "fetch_format", _fake_download)
+    callback = _callback(1, "fmt:137")
+    callback.from_user = None
+
+    await handle_format_selected(callback)
+
+    callback.message.answer_document.assert_awaited_once()
+
+
+async def test_handle_format_selected_without_message() -> None:
+    callback = _callback(1, "fmt:137")
+    callback.message = None
+
+    await handle_format_selected(callback)
+
+    callback.answer.assert_awaited_once_with(FORMAT_SELECTED_TEXT)
+
+
+async def test_handle_error_notifies_user() -> None:
+    message = AsyncMock()
+    event = SimpleNamespace(
+        exception=ValueError("boom"),
+        update=SimpleNamespace(message=message, callback_query=None),
+    )
+
+    result = await handle_error(event)
+
+    assert result is True
+    message.answer.assert_awaited_once_with(UNEXPECTED_ERROR_TEXT)
+
+
+async def test_handle_error_uses_callback_message() -> None:
+    message = AsyncMock()
+    event = SimpleNamespace(
+        exception=ValueError("boom"),
+        update=SimpleNamespace(
+            message=None,
+            callback_query=SimpleNamespace(message=message),
+        ),
+    )
+
+    result = await handle_error(event)
+
+    assert result is True
+    message.answer.assert_awaited_once_with(UNEXPECTED_ERROR_TEXT)
+
+
+async def test_handle_error_without_message() -> None:
+    event = SimpleNamespace(
+        exception=ValueError("boom"),
+        update=SimpleNamespace(message=None, callback_query=None),
+    )
+
+    assert await handle_error(event) is True
+
+
+async def test_handle_error_swallows_notify_failure() -> None:
+    message = AsyncMock()
+    message.answer.side_effect = RuntimeError("nope")
+    event = SimpleNamespace(
+        exception=ValueError("boom"),
+        update=SimpleNamespace(message=message, callback_query=None),
+    )
+
+    assert await handle_error(event) is True
 
 
 @pytest.mark.parametrize(

@@ -88,6 +88,29 @@ def test_extract_info_wraps_download_error(monkeypatch: pytest.MonkeyPatch) -> N
         extract_info("https://youtu.be/dQw4w9WgXcQ")
 
 
+class _EmptyYDL:
+    def __init__(self, options: dict[str, object]) -> None:
+        self.options = options
+
+    def __enter__(self) -> "_EmptyYDL":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def extract_info(self, url: str, download: bool = False) -> None:
+        return None
+
+
+def test_extract_info_raises_when_no_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(extractor.yt_dlp, "YoutubeDL", _EmptyYDL)
+
+    with pytest.raises(ExtractionError):
+        extract_info("https://youtu.be/dQw4w9WgXcQ")
+
+
 async def test_fetch_video_info_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     import time
 
