@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
+EXTRACTION_TIMEOUT = 30.0
+
 _ALLOWED_HOSTS = frozenset(
     {
         "youtube.com",
@@ -89,4 +91,10 @@ def extract_info(url: str) -> VideoInfo:
 
 async def fetch_video_info(url: str) -> VideoInfo:
     """Async wrapper around :func:`extract_info` (runs in a worker thread)."""
-    return await asyncio.to_thread(extract_info, url)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(extract_info, url),
+            timeout=EXTRACTION_TIMEOUT,
+        )
+    except TimeoutError as exc:
+        raise ExtractionError(str(exc)) from exc

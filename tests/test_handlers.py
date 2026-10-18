@@ -18,6 +18,7 @@ from tg_bot_ytdl.handlers import (
     HELP_TEXT,
     NOT_A_LINK_TEXT,
     PROCESSING_TEXT,
+    RATE_LIMITED_TEXT,
     SELECTION_EXPIRED_TEXT,
     START_TEXT,
     TOO_LARGE_TEXT,
@@ -33,6 +34,7 @@ from tg_bot_ytdl.models import DownloadRequest, User
 @pytest.fixture(autouse=True)
 def _clear_last_video() -> None:
     handlers._last_video.clear()
+    handlers._rate_limiter.reset()
 
 
 def _message(text: str, user_id: int = 1) -> AsyncMock:
@@ -294,6 +296,27 @@ async def test_handle_link_handles_extraction_error(
     await handle_link(message)
 
     message.answer.assert_any_await(EXTRACTION_FAILED_TEXT)
+
+
+async def test_handle_link_rate_limits_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = VideoInfo(
+        url="https://youtu.be/x",
+        title="Test Video",
+        duration=65,
+        uploader="Test Channel",
+        formats=[],
+    )
+    monkeypatch.setattr(handlers, "fetch_video_info", AsyncMock(return_value=info))
+
+    first = _message("https://youtu.be/x", user_id=7)
+    await handle_link(first)
+    second = _message("https://youtu.be/x", user_id=7)
+
+    await handle_link(second)
+
+    second.answer.assert_awaited_once_with(RATE_LIMITED_TEXT)
 
 
 @pytest.mark.parametrize(

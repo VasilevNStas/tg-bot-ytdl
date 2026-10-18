@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Command handlers for the bot."""
 
+import logging
 import tempfile
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, Message
 from aiogram.types import User as TelegramUser
 
 from tg_bot_ytdl.db import session_scope
@@ -23,6 +24,7 @@ from tg_bot_ytdl.extractor import (
     is_supported_url,
 )
 from tg_bot_ytdl.keyboards import CALLBACK_PREFIX, build_formats_keyboard
+from tg_bot_ytdl.ratelimit import RateLimiter
 from tg_bot_ytdl.repository import (
     STATUS_FAILED,
     STATUS_SENT,
@@ -34,6 +36,10 @@ from tg_bot_ytdl.repository import (
 router = Router(name="common")
 
 _last_video: dict[int, VideoInfo] = {}
+
+_rate_limiter = RateLimiter()
+
+logger = logging.getLogger(__name__)
 
 START_TEXT = (
     "Привет! Отправь мне ссылку на видео YouTube, "
@@ -87,6 +93,10 @@ TOO_LARGE_TEXT = (
 DOWNLOAD_FAILED_TEXT = "Не удалось скачать файл. Попробуй другой формат."
 
 SELECTION_EXPIRED_TEXT = "Не удалось найти выбранный формат. Отправь ссылку заново."
+
+RATE_LIMITED_TEXT = "Слишком часто. Подожди пару секунд и попробуй снова."
+
+UNEXPECTED_ERROR_TEXT = "Что-то пошло не так. Попробуй ещё раз позже."
 
 
 def format_duration(seconds: int | None) -> str:
@@ -144,7 +154,11 @@ async def handle_link(message: Message) -> None:
     text = (message.text or "").strip()
     if text.startswith("/"):
         return
-    _touch_user(message.from_user)
+    user = message.from_user
+    if user is not None and not _rate_limiter.allow(user.id):
+        await message.answer(RATE_LIMITED_TEXT)
+        return
+    _touch_user(user)
     if not is_supported_url(text):
         await message.answer(NOT_A_LINK_TEXT)
         return
@@ -199,3 +213,19 @@ async def handle_format_selected(callback: CallbackQuery) -> None:
         await message.answer(DOWNLOAD_FAILED_TEXT)
         return
     _record_download(user, info, fmt, STATUS_SENT)
+
+
+@router.errors()
+async def handle_error(event: ErrorEvent) -> bool:
+    """Log unexpected errors and notify the user when possible."""
+    logger.exception("Unhandled error", exc_info=event.exception)
+    update = event.update
+    message = update.message or (
+        update.callback_query.message if update.callback_query else None
+    )
+    if message is not None:
+        try:
+            await message.answer(UNEXPECTED_ERROR_TEXT)
+        except Exception:
+            logger.exception("Failed to notify user about the error")
+    return True

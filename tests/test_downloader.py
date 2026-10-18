@@ -69,3 +69,19 @@ def test_download_format_wraps_download_error(
 
     with pytest.raises(DownloadError):
         download_format("https://youtu.be/x", "137", tmp_path)
+
+
+async def test_fetch_format_times_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import time
+
+    def _slow(*args: object, **kwargs: object) -> Path:
+        time.sleep(0.5)
+        return tmp_path / "abc.mp4"
+
+    monkeypatch.setattr(downloader, "download_format", _slow)
+    monkeypatch.setattr(downloader, "DOWNLOAD_TIMEOUT", 0.01)
+
+    with pytest.raises(DownloadError):
+        await downloader.fetch_format("https://youtu.be/x", "137", tmp_path)
