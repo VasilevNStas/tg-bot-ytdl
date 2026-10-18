@@ -37,6 +37,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch) -> tuple[list[Any], _FakeDispatcher]
     monkeypatch.setattr(main, "Bot", _FakeBot)
     monkeypatch.setattr(main, "Dispatcher", lambda: dispatcher)
     monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main, "configure_bot_ui", AsyncMock())
     monkeypatch.setattr(
         main,
         "get_settings",
@@ -54,6 +55,7 @@ async def test_main_starts_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created[0].token == "token"
     assert dispatcher.polled is True
     assert dispatcher.routers
+    main.configure_bot_ui.assert_awaited_once_with(created[0])
     created[0].session.close.assert_awaited_once()
 
 
