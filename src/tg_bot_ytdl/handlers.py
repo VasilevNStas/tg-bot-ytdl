@@ -14,9 +14,13 @@ from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, Message
 from aiogram.types import User as TelegramUser
 
 from tg_bot_ytdl.channels import (
+    SECTIONS,
     ChannelInfo,
+    ChannelVideo,
     fetch_channel_info,
+    fetch_channel_videos,
     is_channel_url,
+    section_url,
 )
 from tg_bot_ytdl.db import session_scope
 from tg_bot_ytdl.downloader import (
@@ -36,12 +40,16 @@ from tg_bot_ytdl.keyboards import (
     MENU_DOWNLOAD,
     MENU_HELP,
     MENU_SUBSCRIPTIONS,
+    SECTION_CALLBACK_PREFIX,
     SUBSCRIPTION_CALLBACK_PREFIX,
     SUBSCRIPTION_DELETE_PREFIX,
+    VIDEO_CALLBACK_PREFIX,
+    build_channel_sections_keyboard,
     build_formats_keyboard,
     build_main_menu_keyboard,
     build_subscription_actions_keyboard,
     build_subscriptions_keyboard,
+    build_video_keyboard,
     select_formats,
 )
 from tg_bot_ytdl.ratelimit import RateLimiter
@@ -157,6 +165,22 @@ SUBSCRIPTION_EXPIRED_TEXT = (
 )
 
 SUBSCRIPTION_DELETED_TEXT = "Подписка удалена."
+
+SECTION_CHOOSE_TEXT = "Выбери раздел канала «{title}»:"
+
+SECTION_LIST_TITLE_TEXT = "Последние видео канала «{title}»:"
+
+SECTION_LOADING_TEXT = "Загружаю список..."
+
+SECTION_EMPTY_TEXT = "В этом разделе пока нет видео."
+
+SECTION_FAILED_TEXT = "Не удалось получить список видео. Попробуй позже."
+
+SECTION_EXPIRED_TEXT = "Выбор устарел. Открой «📺 Мои подписки» заново."
+
+FORMATS_PREPARING_TEXT = "Готовлю форматы..."
+
+_VIDEO_CAPTION_LIMIT = 200
 
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
 _MAX_FILENAME_LENGTH = 64
@@ -311,9 +335,43 @@ async def handle_subscriptions(message: Message) -> None:
     )
 
 
+def _parse_section(data: str | None) -> tuple[int, str] | None:
+    """Parse ``<subscription_id>:<section>`` callback data."""
+    raw = (data or "")[len(SECTION_CALLBACK_PREFIX) :]
+    id_part, _, section = raw.partition(":")
+    if section not in SECTIONS:
+        return None
+    try:
+        return int(id_part), section
+    except ValueError:
+        return None
+
+
+def _video_caption(video: ChannelVideo) -> str:
+    """Build a caption for a video preview."""
+    title = " ".join(video.title.split())[:_VIDEO_CAPTION_LIMIT] or video.video_id
+    if video.duration:
+        return f"{title}\n{format_duration(video.duration)}"
+    return title
+
+
+async def _send_video_card(message: Message, video: ChannelVideo) -> None:
+    """Send one video preview with a download button."""
+    caption = _video_caption(video)
+    keyboard = build_video_keyboard(video.video_id)
+    try:
+        await message.answer_photo(
+            photo=video.thumbnail_url,
+            caption=caption,
+            reply_markup=keyboard,
+        )
+    except TelegramBadRequest:
+        await message.answer(caption, reply_markup=keyboard)
+
+
 @router.callback_query(F.data.startswith(SUBSCRIPTION_CALLBACK_PREFIX))
 async def handle_subscription_open(callback: CallbackQuery) -> None:
-    """Show a saved channel with its actions."""
+    """Show a saved channel and its section picker."""
     await callback.answer()
     message = callback.message
     if message is None:
@@ -329,9 +387,63 @@ async def handle_subscription_open(callback: CallbackQuery) -> None:
         return
     title, url = channel
     await message.answer(
-        f"{title}\n{url}",
-        reply_markup=build_subscription_actions_keyboard(subscription_id),
+        f"{SECTION_CHOOSE_TEXT.format(title=title)}\n{url}",
+        reply_markup=build_channel_sections_keyboard(subscription_id),
     )
+
+
+@router.callback_query(F.data.startswith(SECTION_CALLBACK_PREFIX))
+async def handle_section_selected(callback: CallbackQuery) -> None:
+    """List recent videos of the chosen channel section."""
+    await callback.answer()
+    message = callback.message
+    if message is None:
+        return
+    parsed = _parse_section(callback.data)
+    channel = None if parsed is None else _get_channel(callback.from_user, parsed[0])
+    if parsed is None or channel is None:
+        await message.answer(SECTION_EXPIRED_TEXT)
+        return
+    title, url = channel
+    await message.answer(SECTION_LOADING_TEXT)
+    try:
+        videos = await fetch_channel_videos(section_url(url, parsed[1]))
+    except ExtractionError:
+        await message.answer(SECTION_FAILED_TEXT)
+        return
+    if not videos:
+        await message.answer(SECTION_EMPTY_TEXT)
+        return
+    await message.answer(SECTION_LIST_TITLE_TEXT.format(title=title))
+    for video in videos:
+        await _send_video_card(message, video)
+
+
+@router.callback_query(F.data.startswith(VIDEO_CALLBACK_PREFIX))
+async def handle_video_selected(callback: CallbackQuery) -> None:
+    """Fetch the chosen video metadata and show its formats."""
+    await callback.answer(FORMATS_PREPARING_TEXT)
+    message = callback.message
+    if message is None:
+        return
+    video_id = (callback.data or "")[len(VIDEO_CALLBACK_PREFIX) :].strip()
+    if not video_id:
+        await message.answer(SECTION_EXPIRED_TEXT)
+        return
+    user = callback.from_user
+    if user is not None and not _rate_limiter.allow(user.id):
+        await message.answer(RATE_LIMITED_TEXT)
+        return
+    _touch_user(user)
+    link = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        info = await fetch_video_info(link)
+    except ExtractionError:
+        await message.answer(EXTRACTION_FAILED_TEXT)
+        return
+    info = replace(info, formats=select_formats(info.formats))
+    _last_video[message.chat.id] = info
+    await _send_video_summary(message, info)
 
 
 @router.callback_query(F.data.startswith(SUBSCRIPTION_DELETE_PREFIX))

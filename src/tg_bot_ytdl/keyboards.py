@@ -5,6 +5,11 @@
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
+from tg_bot_ytdl.channels import (
+    SECTION_SHORTS,
+    SECTION_STREAMS,
+    SECTION_VIDEOS,
+)
 from tg_bot_ytdl.extractor import VideoFormat
 
 CALLBACK_PREFIX = "fmt:"
@@ -17,6 +22,16 @@ MENU_HELP = "ℹ️ Помощь"
 
 SUBSCRIPTION_CALLBACK_PREFIX = "sub:"
 SUBSCRIPTION_DELETE_PREFIX = "subdel:"
+
+SECTION_CALLBACK_PREFIX = "sec:"
+VIDEO_CALLBACK_PREFIX = "dl:"
+VIDEO_BUTTON_TEXT = "⬇️ Скачать"
+
+SECTION_LABELS: tuple[tuple[str, str], ...] = (
+    (SECTION_VIDEOS, "🎬 Видео"),
+    (SECTION_SHORTS, "📱 Шортс"),
+    (SECTION_STREAMS, "🔴 Трансляции"),
+)
 
 _MAX_BUTTON_TITLE = 40
 
@@ -67,6 +82,35 @@ def build_subscription_actions_keyboard(
     builder.button(
         text="❌ Удалить",
         callback_data=f"{SUBSCRIPTION_DELETE_PREFIX}{subscription_id}",
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_channel_sections_keyboard(
+    subscription_id: int,
+) -> InlineKeyboardMarkup:
+    """Build the section picker for a saved channel."""
+    builder = InlineKeyboardBuilder()
+    for section, label in SECTION_LABELS:
+        builder.button(
+            text=label,
+            callback_data=f"{SECTION_CALLBACK_PREFIX}{subscription_id}:{section}",
+        )
+    builder.button(
+        text="❌ Удалить",
+        callback_data=f"{SUBSCRIPTION_DELETE_PREFIX}{subscription_id}",
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_video_keyboard(video_id: str) -> InlineKeyboardMarkup:
+    """Build the download button shown under a video preview."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=VIDEO_BUTTON_TEXT,
+        callback_data=f"{VIDEO_CALLBACK_PREFIX}{video_id}",
     )
     builder.adjust(1)
     return builder.as_markup()
