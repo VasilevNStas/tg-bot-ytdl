@@ -4,7 +4,13 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tg_bot_ytdl.db import Base
@@ -34,6 +40,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    subscriptions: Mapped[list["Subscription"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class DownloadRequest(Base):
@@ -55,3 +65,24 @@ class DownloadRequest(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="downloads")
+
+
+class Subscription(Base):
+    """A public YouTube channel saved by a user."""
+
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "channel_id", name="uq_subscription_user_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    channel_id: Mapped[str] = mapped_column(String(128))
+    url: Mapped[str] = mapped_column(String(2048))
+    title: Mapped[str] = mapped_column(String(512))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_viewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
+    user: Mapped[User] = relationship(back_populates="subscriptions")

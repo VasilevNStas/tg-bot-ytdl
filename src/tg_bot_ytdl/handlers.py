@@ -13,6 +13,11 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, Message
 from aiogram.types import User as TelegramUser
 
+from tg_bot_ytdl.channels import (
+    ChannelInfo,
+    fetch_channel_info,
+    is_channel_url,
+)
 from tg_bot_ytdl.db import session_scope
 from tg_bot_ytdl.downloader import (
     MAX_FILE_SIZE,
@@ -28,7 +33,15 @@ from tg_bot_ytdl.extractor import (
 )
 from tg_bot_ytdl.keyboards import (
     CALLBACK_PREFIX,
+    MENU_DOWNLOAD,
+    MENU_HELP,
+    MENU_SUBSCRIPTIONS,
+    SUBSCRIPTION_CALLBACK_PREFIX,
+    SUBSCRIPTION_DELETE_PREFIX,
     build_formats_keyboard,
+    build_main_menu_keyboard,
+    build_subscription_actions_keyboard,
+    build_subscriptions_keyboard,
     select_formats,
 )
 from tg_bot_ytdl.ratelimit import RateLimiter
@@ -36,8 +49,12 @@ from tg_bot_ytdl.repository import (
     STATUS_FAILED,
     STATUS_SENT,
     STATUS_TOO_LARGE,
+    add_subscription,
     get_or_create_user,
+    get_subscription,
+    list_subscriptions,
     record_download,
+    remove_subscription,
 )
 
 router = Router(name="common")
@@ -49,32 +66,41 @@ _rate_limiter = RateLimiter()
 logger = logging.getLogger(__name__)
 
 START_TEXT = (
-    "Привет! Отправь мне ссылку на видео YouTube, "
-    "и я покажу доступные форматы для скачивания."
+    "Привет! Я помогу скачать видео или аудио с YouTube.\n\n"
+    "• Отправь ссылку на видео — покажу доступные форматы.\n"
+    "• Отправь ссылку на канал — сохраню его в «📺 Мои подписки»."
 )
 
 HELP_TEXT = (
     "Как пользоваться:\n"
-    "1. Отправь ссылку на видео YouTube.\n"
-    "2. Выбери нужный формат из списка.\n"
-    "3. Получи готовый файл.\n\n"
+    "1. Отправь ссылку на видео YouTube — выбери формат и получи файл.\n"
+    "2. Отправь ссылку на канал YouTube — я сохраню его в подписках.\n"
+    "3. В «📺 Мои подписки» можно вернуться к сохранённым каналам.\n\n"
     "Команды:\n"
     "/start — начать\n"
-    "/help — эта справка"
+    "/help — эта справка\n"
+    "/subscriptions — мои подписки"
 )
 
 
 @router.message(CommandStart())
 async def handle_start(message: Message) -> None:
-    """Reply to the /start command."""
+    """Reply to the /start command with the main menu."""
     _touch_user(message.from_user)
-    await message.answer(START_TEXT)
+    await message.answer(START_TEXT, reply_markup=build_main_menu_keyboard())
 
 
 @router.message(Command("help"))
+@router.message(F.text == MENU_HELP)
 async def handle_help(message: Message) -> None:
-    """Reply to the /help command."""
-    await message.answer(HELP_TEXT)
+    """Reply to the /help command with the main menu."""
+    await message.answer(HELP_TEXT, reply_markup=build_main_menu_keyboard())
+
+
+@router.message(F.text == MENU_DOWNLOAD)
+async def handle_menu_download(message: Message) -> None:
+    """Hint the user to send a video link."""
+    await message.answer(DOWNLOAD_HINT_TEXT)
 
 
 NOT_A_LINK_TEXT = (
@@ -104,6 +130,33 @@ SELECTION_EXPIRED_TEXT = "Не удалось найти выбранный фо
 RATE_LIMITED_TEXT = "Слишком часто. Подожди пару секунд и попробуй снова."
 
 UNEXPECTED_ERROR_TEXT = "Что-то пошло не так. Попробуй ещё раз позже."
+
+DOWNLOAD_HINT_TEXT = (
+    "Отправь ссылку на видео YouTube — покажу доступные форматы.\n"
+    "Ссылку на канал можно сохранить в «📺 Мои подписки»."
+)
+
+SUBS_EMPTY_TEXT = (
+    "У тебя пока нет подписок.\n"
+    "Отправь ссылку на канал YouTube, например https://www.youtube.com/@NASA — "
+    "я сохраню его в «📺 Мои подписки»."
+)
+
+SUBS_TITLE_TEXT = "Твои подписки:"
+
+CHANNEL_ADDED_TEXT = "Канал «{title}» сохранён в подписках."
+
+CHANNEL_EXISTS_TEXT = "Канал «{title}» уже в подписках."
+
+CHANNEL_FAILED_TEXT = (
+    "Не удалось получить информацию о канале. Проверь ссылку и попробуй снова."
+)
+
+SUBSCRIPTION_EXPIRED_TEXT = (
+    "Не удалось найти подписку. Открой список «📺 Мои подписки» заново."
+)
+
+SUBSCRIPTION_DELETED_TEXT = "Подписка удалена."
 
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
 _MAX_FILENAME_LENGTH = 64
@@ -166,6 +219,139 @@ def _record_download(
         )
 
 
+def _callback_id(data: str | None, prefix: str) -> int | None:
+    """Parse an integer subscription id out of callback data."""
+    raw = (data or "")[len(prefix) :]
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _list_saved_channels(user: TelegramUser | None) -> list[tuple[int, str]]:
+    """Return ``(id, title)`` pairs for the channels saved by ``user``."""
+    if user is None:
+        return []
+    with session_scope() as session:
+        return [(sub.id, sub.title) for sub in list_subscriptions(session, user.id)]
+
+
+def _save_channel(
+    user: TelegramUser | None,
+    channel: ChannelInfo,
+) -> tuple[int, bool]:
+    """Persist a channel for ``user``; return its id and whether it is new."""
+    if user is None:
+        return 0, False
+    with session_scope() as session:
+        subscription, created = add_subscription(
+            session,
+            user.id,
+            user.username,
+            channel_id=channel.channel_id,
+            url=channel.url,
+            title=channel.title,
+        )
+        return subscription.id, created
+
+
+def _get_channel(
+    user: TelegramUser | None,
+    subscription_id: int,
+) -> tuple[str, str] | None:
+    """Return ``(title, url)`` of a saved channel or ``None``."""
+    if user is None:
+        return None
+    with session_scope() as session:
+        subscription = get_subscription(session, user.id, subscription_id)
+        if subscription is None:
+            return None
+        return subscription.title, subscription.url
+
+
+def _delete_channel(user: TelegramUser | None, subscription_id: int) -> bool:
+    """Delete a saved channel; return whether it existed."""
+    if user is None:
+        return False
+    with session_scope() as session:
+        return remove_subscription(session, user.id, subscription_id)
+
+
+async def _handle_channel_link(
+    message: Message,
+    user: TelegramUser | None,
+    text: str,
+) -> None:
+    """Look up a channel, save it and confirm."""
+    await message.answer(PROCESSING_TEXT)
+    try:
+        channel = await fetch_channel_info(text)
+    except ExtractionError:
+        await message.answer(CHANNEL_FAILED_TEXT)
+        return
+    subscription_id, created = _save_channel(user, channel)
+    template = CHANNEL_ADDED_TEXT if created else CHANNEL_EXISTS_TEXT
+    await message.answer(
+        template.format(title=channel.title),
+        reply_markup=build_subscription_actions_keyboard(subscription_id),
+    )
+
+
+@router.message(Command("subscriptions"))
+@router.message(F.text == MENU_SUBSCRIPTIONS)
+async def handle_subscriptions(message: Message) -> None:
+    """List the channels saved by the user."""
+    subscriptions = _list_saved_channels(message.from_user)
+    if not subscriptions:
+        await message.answer(SUBS_EMPTY_TEXT)
+        return
+    await message.answer(
+        SUBS_TITLE_TEXT,
+        reply_markup=build_subscriptions_keyboard(subscriptions),
+    )
+
+
+@router.callback_query(F.data.startswith(SUBSCRIPTION_CALLBACK_PREFIX))
+async def handle_subscription_open(callback: CallbackQuery) -> None:
+    """Show a saved channel with its actions."""
+    await callback.answer()
+    message = callback.message
+    if message is None:
+        return
+    subscription_id = _callback_id(callback.data, SUBSCRIPTION_CALLBACK_PREFIX)
+    channel = (
+        None
+        if subscription_id is None
+        else _get_channel(callback.from_user, subscription_id)
+    )
+    if channel is None:
+        await message.answer(SUBSCRIPTION_EXPIRED_TEXT)
+        return
+    title, url = channel
+    await message.answer(
+        f"{title}\n{url}",
+        reply_markup=build_subscription_actions_keyboard(subscription_id),
+    )
+
+
+@router.callback_query(F.data.startswith(SUBSCRIPTION_DELETE_PREFIX))
+async def handle_subscription_delete(callback: CallbackQuery) -> None:
+    """Delete a saved channel."""
+    await callback.answer()
+    message = callback.message
+    if message is None:
+        return
+    subscription_id = _callback_id(callback.data, SUBSCRIPTION_DELETE_PREFIX)
+    removed = subscription_id is not None and _delete_channel(
+        callback.from_user, subscription_id
+    )
+    text = SUBSCRIPTION_DELETED_TEXT if removed else SUBSCRIPTION_EXPIRED_TEXT
+    try:
+        await message.edit_text(text)
+    except TelegramBadRequest:
+        await message.answer(text)
+
+
 async def _send_video_summary(message: Message, info: VideoInfo) -> None:
     """Send the thumbnail with the caption and format keyboard."""
     caption = format_info_message(info)
@@ -194,6 +380,9 @@ async def handle_link(message: Message) -> None:
         await message.answer(RATE_LIMITED_TEXT)
         return
     _touch_user(user)
+    if is_channel_url(text):
+        await _handle_channel_link(message, user, text)
+        return
     if not is_supported_url(text):
         await message.answer(NOT_A_LINK_TEXT)
         return

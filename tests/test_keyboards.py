@@ -8,7 +8,16 @@ from tg_bot_ytdl.extractor import VideoFormat
 from tg_bot_ytdl.keyboards import (
     CALLBACK_PREFIX,
     MAX_FORMAT_BUTTONS,
+    MENU_DOWNLOAD,
+    MENU_HELP,
+    MENU_SUBSCRIPTIONS,
+    SUBSCRIPTION_CALLBACK_PREFIX,
+    SUBSCRIPTION_DELETE_PREFIX,
     build_formats_keyboard,
+    build_main_menu_keyboard,
+    build_subscription_actions_keyboard,
+    build_subscriptions_keyboard,
+    channel_button_label,
     format_button_label,
     format_filesize,
     select_formats,
@@ -135,3 +144,38 @@ def test_label_marks_audio_only() -> None:
         )
     )
     assert label.startswith("аудио medium")
+
+
+def test_main_menu_keyboard_has_three_buttons() -> None:
+    markup = build_main_menu_keyboard()
+    buttons = [button.text for row in markup.keyboard for button in row]
+    assert buttons == [MENU_DOWNLOAD, MENU_SUBSCRIPTIONS, MENU_HELP]
+
+
+def test_subscriptions_keyboard_returns_none_for_empty() -> None:
+    assert build_subscriptions_keyboard([]) is None
+
+
+def test_subscriptions_keyboard_uses_ids_in_callback() -> None:
+    markup = build_subscriptions_keyboard([(5, "NASA"), (7, "ESA")])
+    assert markup is not None
+    assert len(markup.inline_keyboard) == 2
+    assert (
+        markup.inline_keyboard[0][0].callback_data == f"{SUBSCRIPTION_CALLBACK_PREFIX}5"
+    )
+    assert (
+        markup.inline_keyboard[1][0].callback_data == f"{SUBSCRIPTION_CALLBACK_PREFIX}7"
+    )
+
+
+def test_actions_keyboard_deletes_subscription() -> None:
+    markup = build_subscription_actions_keyboard(3)
+    assert (
+        markup.inline_keyboard[0][0].callback_data == f"{SUBSCRIPTION_DELETE_PREFIX}3"
+    )
+
+
+def test_channel_button_label_truncates() -> None:
+    assert channel_button_label("  NASA   TV ") == "NASA TV"
+    assert channel_button_label("") == "Канал"
+    assert len(channel_button_label("x" * 100)) == 40

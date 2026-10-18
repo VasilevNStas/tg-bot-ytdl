@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tg_bot_ytdl.extractor import VideoFormat, VideoInfo
-from tg_bot_ytdl.models import DownloadRequest, User
+from tg_bot_ytdl.models import DownloadRequest, Subscription, User
 
 STATUS_SENT = "sent"
 STATUS_TOO_LARGE = "too_large"
@@ -62,3 +62,78 @@ def record_download(
     session.add(request)
     session.flush()
     return request
+
+
+def add_subscription(
+    session: Session,
+    telegram_id: int,
+    username: str | None,
+    *,
+    channel_id: str,
+    url: str,
+    title: str,
+) -> tuple[Subscription, bool]:
+    """Save a channel for ``telegram_id``; return it and whether it is new."""
+    user = get_or_create_user(session, telegram_id, username)
+    existing = session.scalar(
+        select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.channel_id == channel_id,
+        )
+    )
+    if existing is not None:
+        return existing, False
+    subscription = Subscription(
+        user_id=user.id,
+        channel_id=channel_id,
+        url=url,
+        title=title,
+    )
+    session.add(subscription)
+    session.flush()
+    return subscription, True
+
+
+def list_subscriptions(session: Session, telegram_id: int) -> list[Subscription]:
+    """Return the channels saved by ``telegram_id``, oldest first."""
+    user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+    if user is None:
+        return []
+    return list(
+        session.scalars(
+            select(Subscription)
+            .where(Subscription.user_id == user.id)
+            .order_by(Subscription.added_at, Subscription.id)
+        )
+    )
+
+
+def get_subscription(
+    session: Session,
+    telegram_id: int,
+    subscription_id: int,
+) -> Subscription | None:
+    """Return one saved channel of ``telegram_id`` or ``None``."""
+    user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+    if user is None:
+        return None
+    return session.scalar(
+        select(Subscription).where(
+            Subscription.id == subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+
+
+def remove_subscription(
+    session: Session,
+    telegram_id: int,
+    subscription_id: int,
+) -> bool:
+    """Delete one saved channel of ``telegram_id``; return whether it existed."""
+    subscription = get_subscription(session, telegram_id, subscription_id)
+    if subscription is None:
+        return False
+    session.delete(subscription)
+    session.flush()
+    return True
