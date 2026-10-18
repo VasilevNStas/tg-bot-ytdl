@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     )
 
     bot_token: SecretStr = SecretStr("")
+    database_url: str = "sqlite:///bot.db"
 
     def require_bot_token(self) -> str:
         """Return the bot token or raise if it is not configured."""

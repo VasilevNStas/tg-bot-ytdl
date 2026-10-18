@@ -7,7 +7,9 @@ import tempfile
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import User as TelegramUser
 
+from tg_bot_ytdl.db import session_scope
 from tg_bot_ytdl.downloader import (
     MAX_FILE_SIZE,
     DownloadError,
@@ -15,11 +17,19 @@ from tg_bot_ytdl.downloader import (
 )
 from tg_bot_ytdl.extractor import (
     ExtractionError,
+    VideoFormat,
     VideoInfo,
     fetch_video_info,
     is_supported_url,
 )
 from tg_bot_ytdl.keyboards import CALLBACK_PREFIX, build_formats_keyboard
+from tg_bot_ytdl.repository import (
+    STATUS_FAILED,
+    STATUS_SENT,
+    STATUS_TOO_LARGE,
+    get_or_create_user,
+    record_download,
+)
 
 router = Router(name="common")
 
@@ -44,6 +54,7 @@ HELP_TEXT = (
 @router.message(CommandStart())
 async def handle_start(message: Message) -> None:
     """Reply to the /start command."""
+    _touch_user(message.from_user)
     await message.answer(START_TEXT)
 
 
@@ -99,12 +110,41 @@ def format_info_message(info: VideoInfo) -> str:
     )
 
 
+def _touch_user(user: TelegramUser | None) -> None:
+    """Register or refresh the given Telegram user."""
+    if user is None:
+        return
+    with session_scope() as session:
+        get_or_create_user(session, user.id, user.username)
+
+
+def _record_download(
+    user: TelegramUser | None,
+    info: VideoInfo,
+    fmt: VideoFormat,
+    status: str,
+) -> None:
+    """Persist a download attempt made by the given user."""
+    if user is None:
+        return
+    with session_scope() as session:
+        record_download(
+            session,
+            user.id,
+            user.username,
+            info=info,
+            fmt=fmt,
+            status=status,
+        )
+
+
 @router.message(F.text)
 async def handle_link(message: Message) -> None:
     """Validate a YouTube link and reply with its metadata."""
     text = (message.text or "").strip()
     if text.startswith("/"):
         return
+    _touch_user(message.from_user)
     if not is_supported_url(text):
         await message.answer(NOT_A_LINK_TEXT)
         return
@@ -139,7 +179,9 @@ async def handle_format_selected(callback: CallbackQuery) -> None:
         await message.answer(SELECTION_EXPIRED_TEXT)
         return
 
+    user = callback.from_user
     if fmt.filesize and fmt.filesize > MAX_FILE_SIZE:
+        _record_download(user, info, fmt, STATUS_TOO_LARGE)
         await message.answer(TOO_LARGE_TEXT)
         return
 
@@ -148,8 +190,12 @@ async def handle_format_selected(callback: CallbackQuery) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = await fetch_format(info.url, format_id, tmp)
             if path.stat().st_size > MAX_FILE_SIZE:
+                _record_download(user, info, fmt, STATUS_TOO_LARGE)
                 await message.answer(TOO_LARGE_TEXT)
                 return
             await message.answer_document(FSInputFile(path))
     except DownloadError:
+        _record_download(user, info, fmt, STATUS_FAILED)
         await message.answer(DOWNLOAD_FAILED_TEXT)
+        return
+    _record_download(user, info, fmt, STATUS_SENT)
