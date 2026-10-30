@@ -70,6 +70,8 @@ pyproject.toml
 uv.lock
 .python-version
 .env.example
+Dockerfile
+compose.yaml
 src/tg_bot_ytdl/
 ├── config.py       # settings (pydantic-settings)
 ├── main.py         # entry point: init DB, bot, dispatcher, polling
@@ -84,15 +86,26 @@ src/tg_bot_ytdl/
 ├── repository.py   # data access helpers
 └── ratelimit.py    # per-user rate limiting
 tests/
-.github/workflows/ci.yml      # lint + tests
-.github/workflows/deploy.yml  # deploy to server after green CI
+deploy/tg-bot-deploy.sh         # server-side deploy script
+.github/workflows/ci.yml        # lint, tests, docker build
+.github/workflows/deploy.yml    # build image → GHCR → deploy after green CI
 .github/dependabot.yml
 ```
 
 ## CI/CD
 
-- **CI** — GitHub Actions runs `ruff check`, `ruff format --check` and `pytest` on every push and pull request to `main`.
-- **CD** — after a green CI run on `main`, a second workflow deploys to the production VPS over SSH. The app runs under systemd (no Docker); `BOT_TOKEN` lives only in a server-side `.env` (mode `600`).
+- **CI** — GitHub Actions runs `ruff check`, `ruff format --check`, `pytest` and a Docker image build on every push and pull request to `main`.
+- **CD** — after a green CI run on `main`, the `Deploy` workflow builds the image, pushes it to GHCR (`sha-<commit>` and `latest`) and then triggers the server over SSH with a key restricted to a forced command. The server runs the bot in Docker via `docker compose pull && docker compose up -d`; SQLite lives in a bind-mounted `data/` directory, and `BOT_TOKEN` stays in a server-side `.env` (mode `600`).
+
+```bash
+# production layout on the server
+/srv/tg-bot-ytdl/
+├── compose.yaml
+├── .env            # BOT_TOKEN, DATABASE_URL=sqlite:////data/bot.db, IMAGE_TAG=sha-...
+└── data/bot.db
+```
+
+Rollback: set `IMAGE_TAG` to a previous `sha-*` value and run `docker compose up -d`.
 
 ## License
 
