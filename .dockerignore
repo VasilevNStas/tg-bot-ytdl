@@ -1,0 +1,39 @@
+# Git
+.git
+.github
+.gitignore
+
+# Local knowledge base and tooling
+.opencode
+.vscode
+.idea
+.DS_Store
+
+# Python env
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+
+# Secrets and runtime data
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+data
+downloads
+tmp
+
+# Tests and coverage
+tests
+.coverage
+htmlcov
+
+# Build output
+dist
+build

@@ -70,6 +70,8 @@ pyproject.toml
 uv.lock
 .python-version
 .env.example
+Dockerfile
+compose.yaml
 src/tg_bot_ytdl/
 ├── config.py       # настройки (pydantic-settings)
 ├── main.py         # точка входа: init БД, бот, dispatcher, polling
@@ -84,15 +86,26 @@ src/tg_bot_ytdl/
 ├── repository.py   # доступ к данным
 └── ratelimit.py    # ограничение частоты запросов на пользователя
 tests/
-.github/workflows/ci.yml      # линт + тесты
-.github/workflows/deploy.yml  # деплой на сервер после зелёного CI
+deploy/tg-bot-deploy.sh         # серверный deploy-скрипт
+.github/workflows/ci.yml        # линт, тесты, сборка образа
+.github/workflows/deploy.yml    # сборка образа → GHCR → деплой после зелёного CI
 .github/dependabot.yml
 ```
 
 ## CI/CD
 
-- **CI** — GitHub Actions прогоняет `ruff check`, `ruff format --check` и `pytest` на каждый push и pull request в `main`.
-- **CD** — после зелёного CI в `main` второй workflow деплоит на production VPS по SSH. Приложение работает под systemd (без Docker); `BOT_TOKEN` хранится только в серверном `.env` (права `600`).
+- **CI** — GitHub Actions прогоняет `ruff check`, `ruff format --check`, `pytest` и сборку Docker-образа на каждый push и pull request в `main`.
+- **CD** — после зелёного CI в `main` workflow `Deploy` собирает образ, публикует его в GHCR (теги `sha-<commit>` и `latest`) и затем заходит на сервер по SSH ключом, ограниченным forced command. На сервере бот работает в Docker через `docker compose pull && docker compose up -d`; SQLite лежит в bind-mount `data/`, а `BOT_TOKEN` — только в серверном `.env` (права `600`).
+
+```bash
+# layout на сервере
+/srv/tg-bot-ytdl/
+├── compose.yaml
+├── .env            # BOT_TOKEN, DATABASE_URL=sqlite:////data/bot.db, IMAGE_TAG=sha-...
+└── data/bot.db
+```
+
+Откат: указать в `IMAGE_TAG` предыдущий `sha-*` и выполнить `docker compose up -d`.
 
 ## Лицензия
 
